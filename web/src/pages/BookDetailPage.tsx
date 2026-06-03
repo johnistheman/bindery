@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { api, BINDERY_BASE, Book, HistoryEvent, MediaType, SearchResult, SearchDebug } from '../api/client'
+import { displayStatus } from '../lib/bookStatus'
 import SearchDebugPanel from '../components/SearchDebugPanel'
 import MediaBadge from '../components/MediaBadge'
 import RebindModal from '../components/RebindModal'
@@ -49,6 +50,7 @@ function languageName(code?: string): string | null {
 
 const statusColors: Record<string, string> = {
   wanted: 'bg-amber-500/20 text-amber-700 dark:text-amber-400',
+  unmonitored: 'bg-slate-400/15 text-slate-500 dark:text-zinc-500',
   downloading: 'bg-blue-500/20 text-blue-700 dark:text-blue-400',
   downloaded: 'bg-purple-500/20 text-purple-700 dark:text-purple-400',
   imported: 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-400',
@@ -414,8 +416,8 @@ export default function BookDetailPage() {
           )}
 
           <div className="flex flex-wrap items-center gap-2 mt-3 text-xs">
-            <span className={`inline-flex items-center px-2 py-0.5 rounded font-medium ${statusColors[book.status] || 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'}`}>
-              {t(`bookDetail.status.${book.status}`, book.status)}
+            <span className={`inline-flex items-center px-2 py-0.5 rounded font-medium ${statusColors[displayStatus(book)] || 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'}`}>
+              {t(`bookDetail.status.${displayStatus(book)}`, book.status)}
             </span>
             {book.excluded && (
               <span className="inline-flex items-center px-2 py-0.5 rounded font-medium bg-amber-500/20 text-amber-700 dark:text-amber-400">

@@ -167,6 +167,7 @@
     "mediaBoth": "📖🎧 Both",
     "deleteConfirm": "Delete {{count}} book(s)?",
     "statusWanted": "Wanted",
+    "statusUnmonitored": "Not monitored",
     "statusDownloading": "Downloading",
     "statusDownloaded": "Downloaded",
     "statusImported": "In Library",
@@ -790,6 +791,7 @@
     "deleteBookConfirm": "Delete book + files",
     "status": {
       "wanted": "Wanted",
+      "unmonitored": "Not monitored",
       "downloading": "Downloading",
       "downloaded": "Downloaded",
       "imported": "Imported",

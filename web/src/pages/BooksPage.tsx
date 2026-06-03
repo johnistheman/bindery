@@ -6,6 +6,7 @@ import { useView } from '../components/useView'
 import GettingStartedGuidance from '../components/GettingStartedGuidance'
 import { useNeedsSetup } from '../components/useNeedsSetup'
 import { api, BINDERY_BASE, Book } from '../api/client'
+import { displayStatus } from '../lib/bookStatus'
 import BulkActionBar from '../components/BulkActionBar'
 import Pagination from '../components/Pagination'
 import { usePagination } from '../components/usePagination'
@@ -14,6 +15,7 @@ type SortMode = 'title-az' | 'title-za' | 'date-new' | 'date-old'
 
 const statusColors: Record<string, string> = {
   wanted: 'bg-amber-500/20 text-amber-400',
+  unmonitored: 'bg-slate-400/15 text-slate-500 dark:text-zinc-500',
   downloading: 'bg-blue-500/20 text-blue-400',
   downloaded: 'bg-cyan-500/20 text-cyan-400',
   imported: 'bg-emerald-500/20 text-emerald-400',
@@ -23,6 +25,7 @@ const statusColors: Record<string, string> = {
 // statusLabel is populated at render time from t() — see BooksPage
 const statusLabelKeys: Record<string, string> = {
   wanted: 'books.statusWanted',
+  unmonitored: 'books.statusUnmonitored',
   downloading: 'books.statusDownloading',
   downloaded: 'books.statusDownloaded',
   imported: 'books.statusImported',
@@ -263,8 +266,8 @@ export default function BooksPage() {
                           : `📖 ${t('common.ebook')}`}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
-                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium ${statusColors[book.status] || 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'}`}>
-                        {statusLabelKeys[book.status] ? t(statusLabelKeys[book.status]) : book.status}
+                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-medium ${statusColors[displayStatus(book)] || 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'}`}>
+                        {statusLabelKeys[displayStatus(book)] ? t(statusLabelKeys[displayStatus(book)]) : book.status}
                       </span>
                     </td>
                   </tr>
@@ -305,8 +308,8 @@ export default function BooksPage() {
                   <p className="text-[10px] text-slate-500 dark:text-zinc-500 truncate mt-0.5">{book.author.authorName}</p>
                 )}
                 <div className="flex items-center gap-1 mt-1 flex-wrap">
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${statusColors[book.status] || 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'}`}>
-                    {statusLabelKeys[book.status] ? t(statusLabelKeys[book.status]) : book.status}
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${statusColors[displayStatus(book)] || 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'}`}>
+                    {statusLabelKeys[displayStatus(book)] ? t(statusLabelKeys[displayStatus(book)]) : book.status}
                   </span>
                   {(book.mediaType === 'audiobook' || book.mediaType === 'both') && (
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300">{t('books.audioLabel')}</span>
