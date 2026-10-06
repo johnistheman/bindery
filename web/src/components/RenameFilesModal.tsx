@@ -85,9 +85,9 @@ export default function RenameFilesModal({ scope, id, label, onClose, onApplied 
   const moves = shown?.moves ?? []
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div
-        className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4 max-h-[85vh] flex flex-col"
+        className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4 modal-max-h flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         <h2 className="text-base font-semibold mb-1 text-slate-900 dark:text-white">Rename files</h2>

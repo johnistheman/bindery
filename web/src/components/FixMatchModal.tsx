@@ -117,7 +117,7 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-20"
+      className="modal-overlay fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-20"
       onClick={onClose}
       role="presentation"
     >

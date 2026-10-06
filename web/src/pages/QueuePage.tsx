@@ -683,7 +683,7 @@ export default function QueuePage() {
 
       {deleteTarget && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={closeDeleteDialog}
         >
           <div

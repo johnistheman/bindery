@@ -89,13 +89,13 @@ export default function AddSeriesBookModal({ series, onClose, onLinked }: Props)
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
+    <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
       <form
         role="dialog"
         aria-modal="true"
         aria-label={`Add book to ${series.title}`}
         onSubmit={submit}
-        className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col"
+        className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-lg shadow-2xl modal-max-h flex flex-col"
         onClick={e => e.stopPropagation()}
       >
         <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
