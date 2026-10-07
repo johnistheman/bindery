@@ -16,6 +16,13 @@ describe('canonicalLanguage', () => {
     expect(canonicalLanguage('')).toBe('')
     expect(canonicalLanguage(undefined)).toBe('')
   })
+
+  it('treats names of Object.prototype members as ordinary unknown codes', () => {
+    for (const v of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(canonicalLanguage(v)).toBe(v.toLowerCase())
+      expect(typeof languageName(v)).toBe('string')
+    }
+  })
 })
 
 describe('languageName', () => {

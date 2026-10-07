@@ -4,7 +4,7 @@
 // together for display and filtering. The list is deliberately short —
 // indexers and metadata providers only reliably tag a few majors — and any
 // other value passes through lowercased.
-const ALIASES: Record<string, string> = {
+const ALIASES = new Map(Object.entries({
   en: 'eng',
   fr: 'fre', fra: 'fre',
   de: 'ger', deu: 'ger',
@@ -17,9 +17,11 @@ const ALIASES: Record<string, string> = {
   ru: 'rus',
   tl: 'tgl',
   id: 'ind',
-}
+}))
 
-const NAMES: Record<string, string> = {
+// Maps rather than plain objects: the value comes from stored metadata, and a
+// language of "constructor" must not resolve to something on Object.prototype.
+const NAMES = new Map(Object.entries({
   eng: 'English',
   fre: 'French',
   ger: 'German',
@@ -32,10 +34,10 @@ const NAMES: Record<string, string> = {
   rus: 'Russian',
   tgl: 'Tagalog',
   ind: 'Indonesian',
-}
+}))
 
-const BY_NAME: Record<string, string> = Object.fromEntries(
-  Object.entries(NAMES).map(([code, name]) => [name.toLowerCase(), code]),
+const BY_NAME = new Map(
+  Array.from(NAMES, ([code, name]) => [name.toLowerCase(), code] as const),
 )
 
 // canonicalLanguage returns the ISO 639-2/B code for any spelling it knows,
@@ -44,9 +46,10 @@ const BY_NAME: Record<string, string> = Object.fromEntries(
 export function canonicalLanguage(code?: string | null): string {
   const raw = (code ?? '').trim().toLowerCase()
   if (!raw) return ''
-  if (BY_NAME[raw]) return BY_NAME[raw]
-  const base = raw.split(/[-_]/)[0]
-  return ALIASES[base] ?? base
+  const named = BY_NAME.get(raw)
+  if (named) return named
+  const base = raw.split(/[-_]/)[0] || raw
+  return ALIASES.get(base) ?? base
 }
 
 // languageName returns the English name of a language code, or the canonical
@@ -54,5 +57,5 @@ export function canonicalLanguage(code?: string | null): string {
 export function languageName(code?: string | null): string | null {
   const canonical = canonicalLanguage(code)
   if (!canonical) return null
-  return NAMES[canonical] ?? canonical
+  return NAMES.get(canonical) ?? canonical
 }
