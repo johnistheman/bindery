@@ -951,6 +951,30 @@ describe('AuthorDetailPage — toolbar and stats', () => {
     expect(screen.getByRole('heading', { name: 'Deutsch Eins' })).toBeInTheDocument()
   })
 
+  it('treats "en" and "eng" as one language in the Language filter', async () => {
+    const { unmount } = renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Two Letter', status: 'imported', language: 'en' }),
+      makeBook({ id: 2, title: 'Three Letter', status: 'imported', language: 'eng' }),
+    ])
+    await screen.findByRole('heading', { name: 'Two Letter' })
+    // Both spellings are English, so there is nothing to choose between.
+    expect(screen.queryByLabelText('Language')).toBeNull()
+    unmount()
+
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Two Letter', status: 'imported', language: 'en' }),
+      makeBook({ id: 2, title: 'Three Letter', status: 'imported', language: 'eng' }),
+      makeBook({ id: 3, title: 'Deutsch', status: 'imported', language: 'de' }),
+    ])
+    await screen.findByRole('heading', { name: 'Two Letter' })
+    const select = screen.getByLabelText('Language')
+    expect(within(select).getAllByRole('option').map(o => o.textContent)).toEqual(['All languages', 'English', 'German'])
+    fireEvent.change(select, { target: { value: 'eng' } })
+    expect(screen.getByRole('heading', { name: 'Two Letter' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Three Letter' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Deutsch' })).toBeNull()
+  })
+
   it('keeps all four stat cells when a count is zero', async () => {
     // The audiobook count used to disappear at zero, changing the row's shape
     // from one author to the next.

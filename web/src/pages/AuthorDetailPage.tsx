@@ -15,6 +15,7 @@ import MarkdownDescription from '../components/MarkdownDescription'
 import { canLinkAuthorMetadata } from '../util/authorMetadata'
 import { metadataSourceLink } from '../util/metadataSource'
 import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
+import { canonicalLanguage, languageName } from '../util/language'
 import { btn, btnSize } from '../components/buttons'
 import Switch from '../components/Switch'
 import CoverPlaceholder from '../components/CoverPlaceholder'
@@ -533,8 +534,10 @@ export default function AuthorDetailPage() {
 
   // The Language select only appears when this author's books span more than
   // one language; a stale pick for a language no longer present is ignored.
+  // Codes are folded first, so "en" and "eng" rows are one English option.
   const languages = useMemo(
-    () => Array.from(new Set(books.map(b => b.language ?? '').filter(Boolean))).sort(),
+    () => Array.from(new Set(books.map(b => canonicalLanguage(b.language)).filter(Boolean)))
+      .sort((a, b) => (languageName(a) ?? a).localeCompare(languageName(b) ?? b)),
     [books],
   )
   const activeLanguage = languages.length > 1 && languages.includes(languageFilter) ? languageFilter : ''
@@ -586,7 +589,7 @@ export default function AuthorDetailPage() {
       list = list.filter(b => b.monitored === (monitoredFilter === 'monitored'))
     }
     if (activeLanguage) {
-      list = list.filter(b => (b.language ?? '') === activeLanguage)
+      list = list.filter(b => canonicalLanguage(b.language) === activeLanguage)
     }
     if (sort === 'title-az' || sort === 'title-za') {
       const dir = sort === 'title-az' ? 1 : -1
@@ -1318,7 +1321,7 @@ export default function AuthorDetailPage() {
                   className={selectCls}
                 >
                   <option value="">{t('authorDetail.filters.allLanguages', 'All languages')}</option>
-                  {languages.map(l => <option key={l} value={l}>{l}</option>)}
+                  {languages.map(l => <option key={l} value={l}>{languageName(l)}</option>)}
                 </select>
               </label>
             )}
