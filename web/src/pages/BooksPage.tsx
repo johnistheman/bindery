@@ -17,6 +17,7 @@ import Pagination from '../components/Pagination'
 import { useServerPagination } from '../components/usePagination'
 import { oneOf, useListParams, useUrlSearchInput } from '../components/useListParams'
 import AddToLibraryModal from '../components/AddToLibraryModal'
+import BookRating from '../components/BookRating'
 
 type SortMode =
   | 'title-az' | 'title-za'
@@ -473,11 +474,8 @@ export default function BooksPage() {
                       ) : '—'}
                     </td>
                     <td className="px-3 py-2 text-slate-600 dark:text-zinc-400 whitespace-nowrap hidden sm:table-cell">{book.releaseDate ? new Date(book.releaseDate).getFullYear() : '—'}</td>
-                    <td
-                      className="px-3 py-2 text-slate-600 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell"
-                      title={book.ratingsCount ? t('books.ratingsCount', { count: book.ratingsCount, formatted: book.ratingsCount.toLocaleString() }) : undefined}
-                    >
-                      {book.averageRating && book.averageRating > 0 ? `★ ${book.averageRating.toFixed(2)}` : '—'}
+                    <td className="px-3 py-2 text-slate-600 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell">
+                      {book.averageRating && book.averageRating > 0 ? <BookRating book={book} /> : '—'}
                     </td>
                     <td className="px-3 py-2 text-xs whitespace-nowrap">
                       {book.mediaType === 'both'
@@ -570,6 +568,7 @@ export default function BooksPage() {
                   {book.releaseDate && (
                     <p className="text-[10px] text-slate-600 dark:text-zinc-500">{new Date(book.releaseDate).getFullYear()}</p>
                   )}
+                  <BookRating book={book} className="text-[10px] text-slate-600 dark:text-zinc-500" />
                   {book.filePath && (
                     <a
                       href={`${BINDERY_BASE}/api/v1/book/${book.id}/file`}

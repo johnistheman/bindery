@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import { api, BINDERY_BASE, Book, HistoryEvent, MediaType, SearchResult, SearchDebug, Series } from '../api/client'
 import SearchDebugPanel from '../components/SearchDebugPanel'
 import CoverPlaceholder from '../components/CoverPlaceholder'
+import BookRating from '../components/BookRating'
 import MarkdownDescription from '../components/MarkdownDescription'
 import MoreMenu from '../components/MoreMenu'
 import Section from '../components/Section'
@@ -969,10 +970,7 @@ function BookDetailPageInner() {
             {book.averageRating && book.averageRating > 0 ? (
               <>
                 <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>
-                <span className="text-slate-600 dark:text-zinc-400">
-                  ★ {book.averageRating.toFixed(2)}
-                  {book.ratingsCount ? ` (${t('books.ratingsCount', { count: book.ratingsCount, formatted: book.ratingsCount.toLocaleString() })})` : ''}
-                </span>
+                <BookRating book={book} withCount className="text-slate-600 dark:text-zinc-400" />
               </>
             ) : null}
             {book.narrator && (
