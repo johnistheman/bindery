@@ -966,6 +966,15 @@ function BookDetailPageInner() {
                 {t('bookDetail.languageUnknown')}
               </span>
             )}
+            {book.averageRating && book.averageRating > 0 ? (
+              <>
+                <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>
+                <span className="text-slate-600 dark:text-zinc-400">
+                  ★ {book.averageRating.toFixed(2)}
+                  {book.ratingsCount ? ` (${t('books.ratingsCount', { count: book.ratingsCount, formatted: book.ratingsCount.toLocaleString() })})` : ''}
+                </span>
+              </>
+            ) : null}
             {book.narrator && (
               <>
                 <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>

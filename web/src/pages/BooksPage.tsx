@@ -24,13 +24,14 @@ type SortMode =
   | 'author-az' | 'author-za'
   | 'type-az' | 'type-za'
   | 'status-az' | 'status-za'
+  | 'rating-asc' | 'rating-desc'
 type MonitoredFilter = '' | 'monitored' | 'unmonitored'
 type StatusFilter = '' | 'wanted' | 'imported' | 'skipped'
 type MediaFilter = '' | 'ebook' | 'audiobook' | 'both'
 
 const SORT_MODES: readonly SortMode[] = [
   'title-az', 'title-za', 'date-new', 'date-old', 'author-az', 'author-za',
-  'type-az', 'type-za', 'status-az', 'status-za',
+  'type-az', 'type-za', 'status-az', 'status-za', 'rating-asc', 'rating-desc',
 ]
 const STATUS_FILTERS: readonly StatusFilter[] = ['', 'wanted', 'imported', 'skipped']
 const MEDIA_FILTERS: readonly MediaFilter[] = ['', 'ebook', 'audiobook', 'both']
@@ -420,6 +421,7 @@ export default function BooksPage() {
                   <SortableHeader label={t('books.colTitle')} asc="title-az" desc="title-za" />
                   <SortableHeader label={t('books.colAuthor')} asc="author-az" desc="author-za" className="hidden md:table-cell" />
                   <SortableHeader label={t('books.colYear')} asc="date-old" desc="date-new" className="hidden sm:table-cell" />
+                  <SortableHeader label={t('books.colRating')} asc="rating-asc" desc="rating-desc" className="hidden lg:table-cell" />
                   <SortableHeader label={t('books.colType')} asc="type-az" desc="type-za" />
                   <SortableHeader label={t('books.colStatus')} asc="status-az" desc="status-za" />
                 </tr>
@@ -471,6 +473,12 @@ export default function BooksPage() {
                       ) : '—'}
                     </td>
                     <td className="px-3 py-2 text-slate-600 dark:text-zinc-400 whitespace-nowrap hidden sm:table-cell">{book.releaseDate ? new Date(book.releaseDate).getFullYear() : '—'}</td>
+                    <td
+                      className="px-3 py-2 text-slate-600 dark:text-zinc-400 whitespace-nowrap hidden lg:table-cell"
+                      title={book.ratingsCount ? t('books.ratingsCount', { count: book.ratingsCount, formatted: book.ratingsCount.toLocaleString() }) : undefined}
+                    >
+                      {book.averageRating && book.averageRating > 0 ? `★ ${book.averageRating.toFixed(2)}` : '—'}
+                    </td>
                     <td className="px-3 py-2 text-xs whitespace-nowrap">
                       {book.mediaType === 'both'
                         ? `📖🎧 ${t('common.ebook')} + ${t('common.audiobook')}`
