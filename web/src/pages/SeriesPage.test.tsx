@@ -23,6 +23,7 @@ vi.mock('../api/client', async importOriginal => {
       createSeries: vi.fn(),
       updateSeries: vi.fn(),
       deleteSeries: vi.fn(),
+      mergeSeries: vi.fn(),
       deleteBook: vi.fn(),
       monitorSeries: vi.fn(),
       linkBookToSeries: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock('../api/client', async importOriginal => {
       linkSeriesHardcover: vi.fn(),
       unlinkSeriesHardcover: vi.fn(),
       getSeriesHardcoverDiff: vi.fn(),
+      unmonitorSeriesSplitParts: vi.fn(),
     },
   }
 })
@@ -317,6 +319,47 @@ describe('SeriesPage', () => {
     // The excluded book carries an "Excluded" marker, not shown as a plain wanted book.
     fireEvent.click(heading)
     expect(await screen.findByText('Excluded')).toBeInTheDocument()
+  })
+
+  it('marks split edition parts, leaves them out of the missing count and unmonitors them (#3048)', async () => {
+    const book = (id: number, title: string, status: Book['status'], monitored: boolean): Book => ({
+      id, foreignBookId: `book-${id}`, authorId: 5, title, description: '', imageUrl: '',
+      releaseDate: '2010-08-31', genres: [], monitored, status, filePath: '', mediaType: 'ebook',
+      ebookFilePath: '', audiobookFilePath: '', excluded: false,
+    })
+    const stormlight: Series = {
+      id: 40,
+      foreignSeriesId: 'series-40',
+      title: 'The Stormlight Archive',
+      description: '',
+      monitored: true,
+      splitEditionPartBookIds: [302, 303],
+      books: [
+        { seriesId: 40, bookId: 301, positionInSeries: '1', book: book(301, 'The Way of Kings', 'imported', true) },
+        { seriesId: 40, bookId: 302, positionInSeries: '1.1', book: book(302, 'The Way of Kings, Part 1', 'wanted', true) },
+        { seriesId: 40, bookId: 303, positionInSeries: '1.2', book: book(303, 'The Way of Kings, Part 2', 'wanted', true) },
+      ],
+    }
+    vi.mocked(api.unmonitorSeriesSplitParts).mockResolvedValue({ unmonitored: 2 })
+    renderSeriesPage([stormlight], { version: 'dev', commit: 'unknown', buildDate: '', enhancedHardcoverApi: false, hardcoverTokenConfigured: true })
+
+    const heading = await screen.findByRole('heading', { name: 'The Stormlight Archive' })
+    // The two parts are not gaps: the whole is imported.
+    expect(screen.queryByText('2 missing')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Fill gaps' })).not.toBeInTheDocument()
+
+    fireEvent.click(heading)
+    expect(await screen.findAllByText('Split part')).toHaveLength(2)
+
+    vi.mocked(api.listSeries).mockResolvedValue([{
+      ...stormlight,
+      books: stormlight.books!.map(b => b.bookId === 301 ? b : { ...b, book: { ...b.book!, monitored: false } }),
+    }])
+    fireEvent.click(screen.getByRole('button', { name: 'Unmonitor 2 split parts' }))
+    await acceptConfirm()
+    await waitFor(() => expect(api.unmonitorSeriesSplitParts).toHaveBeenCalledWith(40))
+    expect(await screen.findByText('2 split parts unmonitored')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Unmonitor 2 split parts' })).not.toBeInTheDocument()
   })
 
   it('opens the Hardcover series link modal from the Search control', async () => {
@@ -624,6 +667,28 @@ describe('SeriesPage', () => {
     expect(api.deleteSeries).toHaveBeenCalledTimes(1)
     expect(api.deleteBook).not.toHaveBeenCalled()
     await waitFor(() => expect(screen.queryByRole('heading', { name: 'New Series' })).not.toBeInTheDocument())
+  })
+
+  it('merges another series into one from its Merge dialog and reloads the list (#2554)', async () => {
+    const keep: Series = { id: 40, foreignSeriesId: 's:40', title: 'Fjellserien', description: '', monitored: false, books: [] }
+    const fold: Series = { id: 41, foreignSeriesId: 's:41', title: 'Serien om fjellet', description: '', monitored: false, books: [] }
+    vi.mocked(api.mergeSeries).mockResolvedValue({
+      targetId: 40, title: 'Fjellserien', aliases: ['s:41'], hardcoverLinkFrom: 0, genreOverrideFrom: 0, monitored: false,
+      sources: [{ id: 41, title: 'Serien om fjellet', foreignSeriesId: 's:41', moved: [], kept: [], conflicts: [] }],
+    })
+    renderSeriesPage([keep, fold])
+
+    expect(await screen.findByRole('heading', { name: 'Fjellserien' })).toBeInTheDocument()
+    fireEvent.click(screen.getAllByRole('button', { name: 'Merge…' })[0])
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Serien om fjellet/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    await waitFor(() => expect(api.mergeSeries).toHaveBeenCalledWith(40, { sourceIds: [41], title: undefined, dryRun: true }))
+
+    vi.mocked(api.listSeries).mockResolvedValue([keep])
+    fireEvent.click(await screen.findByRole('button', { name: 'Merge' }))
+    await acceptConfirm()
+    await waitFor(() => expect(api.mergeSeries).toHaveBeenLastCalledWith(40, { sourceIds: [41], title: undefined, dryRun: false }))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Serien om fjellet' })).not.toBeInTheDocument())
   })
 
   it('links an existing library book to an expanded series', async () => {
