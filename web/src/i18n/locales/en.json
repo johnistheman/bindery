@@ -1662,6 +1662,12 @@
     "searchPlaceholder": "Author, title, ISBN, or ASIN (for example, Le Guin, Dune, 9780441478125, B0DBJBFHGT)",
     "addBook": "Add Book",
     "booksDivider": "Books",
+    "filter": {
+      "label": "Show",
+      "all": "All",
+      "books": "Books",
+      "authors": "Authors"
+    },
     "partialError": "Some results could not be loaded: {{error}}",
     "selectAuthor": "Select {{name}}",
     "searching": "Searching…",
