@@ -1,9 +1,14 @@
 // Book.language is meant to hold an ISO 639-2/B code ("eng"), but not every
 // path that writes it normalises, so the same language can arrive as "en",
 // "en-US", "eng" or "English". These helpers fold the common spellings
-// together for display and filtering. The list is deliberately short —
-// indexers and metadata providers only reliably tag a few majors — and any
+// together for display and filtering. The list is deliberately short:
+// indexers and metadata providers only reliably tag a few majors, and any
 // other value passes through lowercased.
+//
+// The full tables live in internal/models/language.go, which
+// NormalizeLanguageCode reads. A language added here should fold the same way
+// there, including the withdrawn two letter codes in iso639LegacyTwoLetter
+// ("iw", "in", "ji").
 const ALIASES = new Map(Object.entries({
   en: 'eng',
   fr: 'fre', fra: 'fre',
@@ -16,7 +21,9 @@ const ALIASES = new Map(Object.entries({
   zh: 'chi', zho: 'chi',
   ru: 'rus',
   tl: 'tgl',
-  id: 'ind',
+  id: 'ind', in: 'ind',
+  he: 'heb', iw: 'heb',
+  yi: 'yid', ji: 'yid',
 }))
 
 // Maps rather than plain objects: the value comes from stored metadata, and a
@@ -34,6 +41,8 @@ const NAMES = new Map(Object.entries({
   rus: 'Russian',
   tgl: 'Tagalog',
   ind: 'Indonesian',
+  heb: 'Hebrew',
+  yid: 'Yiddish',
 }))
 
 const BY_NAME = new Map(

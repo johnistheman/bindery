@@ -11,6 +11,18 @@ describe('canonicalLanguage', () => {
     expect(canonicalLanguage('zh-Hans')).toBe('chi')
   })
 
+  it('folds the withdrawn two letter codes onto their replacements', () => {
+    // Mirrors iso639LegacyTwoLetter in internal/models/language.go.
+    expect(canonicalLanguage('in')).toBe(canonicalLanguage('id'))
+    expect(canonicalLanguage('in')).toBe('ind')
+    expect(canonicalLanguage('iw')).toBe(canonicalLanguage('he'))
+    expect(canonicalLanguage('iw')).toBe('heb')
+    expect(canonicalLanguage('ji')).toBe(canonicalLanguage('yi'))
+    expect(canonicalLanguage('ji')).toBe('yid')
+    expect(languageName('iw')).toBe('Hebrew')
+    expect(languageName('ji')).toBe('Yiddish')
+  })
+
   it('passes an unknown code through lowercased and maps empty to empty', () => {
     expect(canonicalLanguage('SWE')).toBe('swe')
     expect(canonicalLanguage('')).toBe('')
