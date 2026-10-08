@@ -1680,7 +1680,7 @@
     "idMissing": "This result has no book ID and cannot be added",
     "topWork": "Top work:",
     "books": "up to {{count}} works",
-    "booksTooltip": "OpenLibrary's raw work count. The actual catalogue added will be smaller after deduplication, language filtering, and junk-title removal.",
+    "booksTooltip": "The metadata provider's raw work count. The actual catalogue added will be smaller after deduplication, language filtering, and junk-title removal.",
     "ratings": "{{count}} ratings",
     "resultProvider": "from {{provider}}",
     "noResults": "No results found",
