@@ -864,3 +864,26 @@ func TestAggregator_SearchAuthors_KeepsWinnersOwnBookCount(t *testing.T) {
 		t.Errorf("a winner that reports its own count keeps it, got %+v", got)
 	}
 }
+
+func TestAggregator_SearchAuthors_BorrowedBookCountKeepsWinnersOtherStats(t *testing.T) {
+	hc := &mockProvider{name: "hardcover", searchAuthors: []models.Author{
+		{Name: "Patrick Rothfuss", ForeignID: "hc:patrick-rothfuss", MetadataProvider: "hardcover", Statistics: &models.AuthorStats{AvailableBooks: 2}},
+	}}
+	ol := &mockProvider{name: "openlibrary", searchAuthors: []models.Author{
+		{Name: "Patrick Rothfuss", ForeignID: "OL1394865A", MetadataProvider: "openlibrary", Statistics: &models.AuthorStats{BookCount: 23}},
+	}}
+
+	got, err := newTestAggregator(hc, ol).SearchAuthors(context.Background(), "Patrick Rothfuss")
+	if err != nil {
+		t.Fatalf("SearchAuthors: %v", err)
+	}
+	if len(got) != 1 || got[0].Statistics == nil {
+		t.Fatalf("want one record with statistics, got %+v", got)
+	}
+	if got[0].Statistics.BookCount != 23 || got[0].Statistics.AvailableBooks != 2 {
+		t.Errorf("want the borrowed count beside the winner's own stats, got %+v", got[0].Statistics)
+	}
+	if hc.searchAuthors[0].Statistics.BookCount != 0 {
+		t.Errorf("the borrowed count was written through the provider's pointer: %+v", hc.searchAuthors[0].Statistics)
+	}
+}

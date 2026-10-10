@@ -52,8 +52,6 @@ function basePath(): string {
   return (window as unknown as { __BINDERY_BASE__?: string }).__BINDERY_BASE__ ?? ''
 }
 
-const FILTERS: AddResultFilter[] = ['all', 'books', 'authors']
-
 function isIdentifierQuery(q: string): boolean {
   return isbnFromQuery(q) !== null || ASIN_RE.test(q)
 }
@@ -193,11 +191,11 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
   const hasRows = rows.length > 0
   // The Books view has no author rows, so it has none to reveal either.
   const hiddenCount = filter === 'books' ? 0 : hiddenAuthors.length
-  const filterCounts: Record<AddResultFilter, number | null> = {
-    all: null,
-    books: searched ? books.length : null,
-    authors: searched ? shownAuthors.length : null,
-  }
+  const filterOptions: { value: AddResultFilter; label: string; count: number | null }[] = [
+    { value: 'all', label: t('addToLibrary.filter.all'), count: null },
+    { value: 'books', label: t('addToLibrary.filter.books'), count: searched ? books.length : null },
+    { value: 'authors', label: t('addToLibrary.filter.authors'), count: searched ? shownAuthors.length : null },
+  ]
 
   const badgeClass = 'px-2 py-0.5 rounded-full bg-slate-300/70 dark:bg-zinc-700 text-[11px] font-medium text-slate-700 dark:text-zinc-300'
   const openClass = 'px-3 py-1 rounded text-xs font-medium border border-slate-400 dark:border-zinc-600 hover:bg-slate-200 dark:hover:bg-zinc-800'
@@ -347,17 +345,17 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
             </div>
 
             <div className="mt-3 flex flex-wrap gap-1" role="group" aria-label={t('addToLibrary.filter.label')}>
-              {FILTERS.map(value => (
+              {filterOptions.map(({ value, label, count }) => (
                 <button
                   key={value}
                   type="button"
                   aria-pressed={filter === value}
                   onClick={() => setFilter(value)}
-                  className={`px-3 py-1 rounded-full text-xs font-medium border ${filter === value
+                  className={`touch-target px-3 py-1 rounded-full text-xs font-medium border ${filter === value
                     ? 'bg-emerald-600 border-emerald-600 text-white'
                     : 'border-slate-300 dark:border-zinc-700 text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200/60 dark:hover:bg-zinc-800/60'}`}
                 >
-                  {t(`addToLibrary.filter.${value}`)}{filterCounts[value] !== null && ` (${filterCounts[value]})`}
+                  {label}{count !== null && ` (${count})`}
                 </button>
               ))}
             </div>

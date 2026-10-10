@@ -829,6 +829,8 @@ describe('AddToLibraryModal - result filter', () => {
   it('opens on All without a mode and keeps the grouped list', async () => {
     render(<AddToLibraryModal onClose={onClose} onAdded={onAdded} />)
     expect(filterButton(/^All/)).toHaveAttribute('aria-pressed', 'true')
+    // The pills are short, so each needs the 44px touch hit area.
+    for (const name of [/^All/, /^Books/, /^Authors/]) expect(filterButton(name)).toHaveClass('touch-target')
     typeAndSearch('le guin')
     await waitFor(() => expect(screen.getByText('Dune')).toBeInTheDocument())
     expect(rowKinds()).toEqual(['add-result-author', 'add-result-book', 'add-result-book', 'add-result-book'])
