@@ -745,6 +745,49 @@ describe('AuthorsPage — sortable column headers', () => {
     expect(await screen.findByText('5 / 12')).toBeInTheDocument()
   })
 
+  it('shows a dash, not 0 / 0, for an author with no books', async () => {
+    vi.mocked(api.listAuthors).mockResolvedValue({
+      items: [
+        {
+          id: 1, authorName: 'Empty', foreignAuthorId: 'OL_E', monitored: true,
+          averageRating: 4, imageUrl: '', statistics: { bookCount: 0, availableBookCount: 0, wantedBookCount: 0 },
+        },
+      ] as never,
+      total: 1, limit: 100, offset: 0,
+    })
+
+    render(
+      <MemoryRouter>
+        <AuthorsPage />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('Empty')
+    expect(screen.queryByText('0 / 0')).not.toBeInTheDocument()
+  })
+
+  it('hides the in library line on a grid card for an author with no books', async () => {
+    localStorage.setItem('bindery.view.authors', 'grid')
+    vi.mocked(api.listAuthors).mockResolvedValue({
+      items: [
+        {
+          id: 1, authorName: 'Empty', foreignAuthorId: 'OL_E', monitored: true,
+          averageRating: 4, imageUrl: '', statistics: { bookCount: 0, availableBookCount: 0, wantedBookCount: 0 },
+        },
+      ] as never,
+      total: 1, limit: 100, offset: 0,
+    })
+
+    render(
+      <MemoryRouter>
+        <AuthorsPage />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('Empty')
+    expect(screen.queryByText(/in library/)).not.toBeInTheDocument()
+  })
+
   it('shows have and total on each card in the grid view', async () => {
     localStorage.setItem('bindery.view.authors', 'grid')
     vi.mocked(api.listAuthors).mockResolvedValue({

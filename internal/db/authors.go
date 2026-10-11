@@ -263,9 +263,10 @@ func (r *AuthorRepo) ListPageFiltered(ctx context.Context, f AuthorListFilter, l
 	// the same class as the one #1872 closed, and free to avoid here. NULL-owned
 	// books stay visible to everyone, matching listAuthorsByUser.
 	//
-	// available_count is the subset the library already holds: status
-	// 'imported', the same rule as the author page's "In library" cell. A book
-	// still missing one of its monitored formats is 'wanted' and is not counted.
+	// available_count is the subset the library already holds, by
+	// InLibraryPredicate: imported, or wanted with at least one tracked file, the
+	// same rule as the Books page and the author page. The predicate has no bind
+	// parameters, so it adds nothing to selectArgs below.
 	bookScope := "b.author_id = authors.id"
 	var selectArgs []any
 	if f.UserID != 0 {
@@ -274,7 +275,7 @@ func (r *AuthorRepo) ListPageFiltered(ctx context.Context, f AuthorListFilter, l
 		selectArgs = append(selectArgs, f.UserID, f.UserID)
 	}
 	bookCountExpr := "(SELECT COUNT(*) FROM books b WHERE " + bookScope + ") AS book_count, " +
-		"(SELECT COUNT(*) FROM books b WHERE " + bookScope + " AND b.status = '" + models.BookStatusImported + "') AS available_count"
+		"(SELECT COUNT(*) FROM books b WHERE " + bookScope + " AND " + InLibraryPredicate("b", "") + ") AS available_count"
 
 	//nolint:gosec // query is built only from static columns, a parameterised WHERE, and a whitelisted ORDER BY (authorSortOrder); all user values are bound via args
 	listQuery := "SELECT " + authorSelectCols + ", " + bookCountExpr + " FROM authors" + where +
