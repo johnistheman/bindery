@@ -32,9 +32,11 @@ export interface Book {
   identifiers?: BookIdentifier[]
   authorId: number
   title: string
+  sortTitle?: string
   description: string
   imageUrl: string
   releaseDate?: string
+  createdAt?: string
   genres: string[]
   // Community rating from the metadata providers; 0 when none is known.
   averageRating?: number
