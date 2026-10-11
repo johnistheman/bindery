@@ -9,6 +9,7 @@ import HardcoverSeriesLinkModal from '../components/HardcoverSeriesLinkModal'
 import SeriesNameModal from '../components/SeriesNameModal'
 import MergeSeriesModal from '../components/MergeSeriesModal'
 import { btn, btnSize } from '../components/buttons'
+import { useIsAdmin } from '../auth/AuthContext'
 import Switch from '../components/Switch'
 import { useConfirmDialog } from '../components/useConfirmDialog'
 
@@ -21,6 +22,13 @@ function parseSeriesFilter(raw: string | null): SeriesFilter {
   return SERIES_FILTERS.find(f => f === raw) ?? 'all'
 }
 
+// How many of a series' split edition parts (#3048) are still monitored, which
+// is what the unmonitor action would change.
+function monitoredSplitParts(series: Series): number {
+  const parts = new Set(series.splitEditionPartBookIds ?? [])
+  return (series.books ?? []).filter(b => parts.has(b.bookId) && b.book?.monitored).length
+}
+
 // The counts behind a series card's "N missing" badge, and the only place they
 // are computed, so the Missing and Complete filters cannot disagree with the
 // badge the user is looking at. With enhanced Hardcover on, the badge can count
@@ -31,8 +39,10 @@ function parseSeriesFilter(raw: string | null): SeriesFilter {
 function seriesMissingCounts(series: Series, enhancedHardcoverApi: boolean, diff?: SeriesHardcoverDiff) {
   const books = series.books ?? []
   // Excluded books are not a gap: counting them showed a "missing" pill
-  // that Fill could not act on (#2324).
-  const gapCount = books.filter(b => b.book && b.book.status !== 'imported' && !b.book.excluded).length
+  // that Fill could not act on (#2324). Nor is a split edition part of a book
+  // already in the series, which Fill skips (#3048).
+  const splitParts = new Set(series.splitEditionPartBookIds ?? [])
+  const gapCount = books.filter(b => b.book && b.book.status !== 'imported' && !b.book.excluded && !splitParts.has(b.bookId)).length
   const hardcoverMissingEstimate = enhancedHardcoverApi ? Math.max(0, (series.hardcoverLink?.hardcoverBookCount ?? 0) - books.length) : 0
   const hardcoverMissingCount = enhancedHardcoverApi ? (diff?.missingCount ?? hardcoverMissingEstimate) : 0
   const displayMissingCount = Math.max(gapCount, hardcoverMissingCount)
@@ -41,6 +51,8 @@ function seriesMissingCounts(series: Series, enhancedHardcoverApi: boolean, diff
 
 export default function SeriesPage() {
   const { t } = useTranslation()
+  // Every series change is admin only (#468); other users browse.
+  const isAdmin = useIsAdmin()
   const { confirm, confirmDialog } = useConfirmDialog()
   const location = useLocation()
   const [seriesList, setSeriesList] = useState<Series[]>([])
@@ -219,7 +231,12 @@ export default function SeriesPage() {
             ...(mediaType ? { mediaType } : {}),
           })
         : await api.fillSeriesAll(series.id, mediaType)
-      setFillResult(prev => ({ ...prev, [series.id]: r.queued === 0 ? t('series.fill.nothing') : t('series.fill.queued', { count: r.queued }) }))
+      // Say what the fill left out and why, or a profile that filtered every
+      // missing book reads as a fill that did nothing (#2208, #3048).
+      const parts = [r.queued === 0 ? t('series.fill.nothing') : t('series.fill.queued', { count: r.queued })]
+      if (r.skippedByProfile) parts.push(t('series.fill.skippedByProfile', { count: r.skippedByProfile }))
+      if (r.skippedSplitParts) parts.push(t('series.fill.skippedSplitParts', { count: r.skippedSplitParts }))
+      setFillResult(prev => ({ ...prev, [series.id]: parts.join(', ') }))
       const list = await refreshSeriesList()
       const updated = list.find(s => s.id === series.id)
       if (enhancedHardcoverApi && updated?.hardcoverLink) {
@@ -227,6 +244,26 @@ export default function SeriesPage() {
       }
     } catch {
       setFillResult(prev => ({ ...prev, [series.id]: t('series.fill.failed') }))
+    } finally {
+      setFilling(null)
+    }
+  }
+
+  // One click cleanup for the split edition parts a fill created before the
+  // series diff learned to recognise them (#3048). Unmonitors, never deletes.
+  const unmonitorSplitParts = async (series: Series) => {
+    if (!await confirm({
+      title: t('common.confirmTitle'),
+      body: t('series.splitParts.confirm'),
+      confirmLabel: t('series.splitParts.unmonitor', { count: monitoredSplitParts(series) }),
+    })) return
+    setFilling(series.id)
+    try {
+      const r = await api.unmonitorSeriesSplitParts(series.id)
+      setFillResult(prev => ({ ...prev, [series.id]: t('series.splitParts.done', { count: r.unmonitored }) }))
+      await refreshSeriesList()
+    } catch {
+      setFillResult(prev => ({ ...prev, [series.id]: t('series.splitParts.failed') }))
     } finally {
       setFilling(null)
     }
@@ -328,12 +365,14 @@ export default function SeriesPage() {
           <span className="text-sm text-slate-600 dark:text-zinc-500">
             {filter === 'all' ? t('series.count', { count: seriesList.length }) : t('series.countFiltered', { shown: filteredSeries.length, total: seriesList.length })}
           </span>
-          <button
-            onClick={() => setShowAddSeries(true)}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-md text-sm font-medium transition-colors"
-          >
-            {t('series.addSeries')}
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setShowAddSeries(true)}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-md text-sm font-medium transition-colors"
+            >
+              {t('series.addSeries')}
+            </button>
+          )}
         </div>
       </div>
 
@@ -391,6 +430,8 @@ export default function SeriesPage() {
             const diff = diffs[series.id]
             const { gapCount, hardcoverMissingCount, displayMissingCount } = seriesMissingCounts(series, enhancedHardcoverApi, diff)
             const fillNeeded = gapCount > 0 || hardcoverMissingCount > 0
+            const splitPartIds = new Set(series.splitEditionPartBookIds ?? [])
+            const splitPartsToUnmonitor = monitoredSplitParts(series)
             const isOpen = expanded === series.id
             const sortedBooks = [...books].sort((a, b) => {
               const posA = parseFloat(a.positionInSeries) || 0
@@ -429,6 +470,7 @@ export default function SeriesPage() {
                 </div>
 
                 {/* Actions row */}
+                {isAdmin && (
                 <div className="px-4 pb-3 flex items-center gap-3 pointer-coarse:gap-y-5 flex-wrap" onClick={e => e.stopPropagation()}>
                   {/* This flag is a shortlist marker, not a schedule. Nothing
                       reads series.monitored except this page: no job checks a
@@ -515,6 +557,16 @@ export default function SeriesPage() {
                       {filling === series.id ? t('series.fill.queuing') : t('series.fill.button')}
                     </button>
                   )}
+                  {splitPartsToUnmonitor > 0 && (
+                    <button
+                      onClick={() => unmonitorSplitParts(series)}
+                      disabled={filling === series.id}
+                      className="touch-target text-xs px-2.5 py-1 rounded font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 disabled:opacity-50"
+                      title={t('series.splitParts.unmonitorHint')}
+                    >
+                      {t('series.splitParts.unmonitor', { count: splitPartsToUnmonitor })}
+                    </button>
+                  )}
                   {fillResult[series.id] && (
                     <span className="ml-auto text-xs text-emerald-600 dark:text-emerald-400">{fillResult[series.id]}</span>
                   )}
@@ -522,6 +574,7 @@ export default function SeriesPage() {
                     <span className="ml-auto text-xs text-slate-600 dark:text-zinc-400">{linkResult[series.id]}</span>
                   )}
                 </div>
+                )}
 
                 {isOpen && bookCount > 0 && (
                   <div className="border-t border-slate-200 dark:border-zinc-800 divide-y divide-slate-200/50 dark:divide-zinc-800/50">
@@ -570,6 +623,14 @@ export default function SeriesPage() {
                               {t('series.excluded')}
                             </span>
                           )}
+                          {splitPartIds.has(entry.bookId) && (
+                            <span
+                              className="text-xs px-2 py-0.5 rounded bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400"
+                              title={t('series.splitParts.badgeHint')}
+                            >
+                              {t('series.splitParts.badge')}
+                            </span>
+                          )}
                         </span>
                       </Link>
                     ))}
@@ -606,7 +667,7 @@ export default function SeriesPage() {
                           </a>
                         )}
                       </div>
-                      {(diff?.missingCount ?? 0) > 0 && (
+                      {isAdmin && (diff?.missingCount ?? 0) > 0 && (
                         <div className="flex items-center gap-2 flex-shrink-0">
                           <select
                             aria-label={t('series.hardcover.formatLabel')}
@@ -672,14 +733,14 @@ export default function SeriesPage() {
                           return (
                             <div key={`${book.foreignBookId}-${book.position}`} className={rowClass}>
                               {rowInner}
-                              <button
+                              {isAdmin && <button
                                 onClick={() => fillGaps(series, book, fillMediaType[series.id] ?? 'ebook')}
                                 disabled={filling === series.id}
                                 className="ml-auto text-xs px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded font-medium flex-shrink-0"
                                 title={t('series.hardcover.addTitle')}
                               >
                                 {filling === series.id ? '…' : t('series.hardcover.add')}
-                              </button>
+                              </button>}
                             </div>
                           )
                         })}
@@ -687,6 +748,38 @@ export default function SeriesPage() {
                           <p className="text-xs text-slate-600 dark:text-zinc-500 px-1">{t('series.hardcover.moreMissing', { count: diff.missing.length - 8 })}</p>
                         )}
                       </div>
+                    )}
+                    {/* #2524: a split edition (e.g. "Part 1"/"Part 2") of a book
+                        already present is not a missing volume, so it is never
+                        counted or offered an add button — just linked to the
+                        whole work that covers it. Collapsed by default since
+                        this is the exception, not the thing a user came to
+                        check. */}
+                    {diff && diff.covered.length > 0 && (
+                      <details className="px-4 pb-4">
+                        <summary className="cursor-pointer select-none text-xs text-slate-600 dark:text-zinc-500 hover:text-slate-900 dark:hover:text-white">
+                          {t('series.hardcover.coveredSection', { count: diff.covered.length })}
+                        </summary>
+                        <div className="mt-2 space-y-2">
+                          {diff.covered.map(book => (
+                            <Link
+                              key={`${book.foreignBookId}-${book.position}`}
+                              to={`/book/${book.localBookId}`}
+                              className="flex items-center gap-3 p-3 rounded-md bg-slate-200/50 dark:bg-zinc-800/50 hover:bg-slate-300/50 dark:hover:bg-zinc-700/50 transition-colors"
+                            >
+                              <span className="text-xs text-slate-600 dark:text-zinc-500 w-10 flex-shrink-0 font-mono">
+                                #{book.position || '?'}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium truncate">{book.title}</p>
+                                <p className="text-xs text-slate-600 dark:text-zinc-500 truncate">
+                                  {t('series.hardcover.coveredSubtitle', { title: book.localTitle })}
+                                </p>
+                              </div>
+                            </Link>
+                          ))}
+                        </div>
+                      </details>
                     )}
                   </div>
                 )}

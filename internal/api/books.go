@@ -15,6 +15,7 @@ import (
 
 	"github.com/vavallee/bindery/internal/auth"
 	"github.com/vavallee/bindery/internal/bookhydrate"
+	"github.com/vavallee/bindery/internal/covers"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/importer"
 	"github.com/vavallee/bindery/internal/indexer"
@@ -410,7 +411,24 @@ func (h *BookHandler) Get(w http.ResponseWriter, r *http.Request) {
 	cleanBookDescription(book)
 	h.attachBookFiles(r.Context(), book)
 	h.attachBookIdentifiers(r.Context(), book)
+	h.attachImportInFlight(r.Context(), book)
 	writeJSON(w, http.StatusOK, book)
+}
+
+// attachImportInFlight marks a book whose download is still on its way into
+// the library, which is what the book page's live refresh arms on (#2423).
+// Best effort like the other attachments: a failed lookup only means the page
+// does not refresh itself.
+func (h *BookHandler) attachImportInFlight(ctx context.Context, book *models.Book) {
+	if h.downloads == nil {
+		return
+	}
+	inFlight, err := h.downloads.HasImportInFlight(ctx, book.ID, auth.ListScopeUserID(ctx))
+	if err != nil {
+		slog.Debug("book get: import in flight lookup failed", "book_id", book.ID, "error", err)
+		return
+	}
+	book.ImportInFlight = inFlight
 }
 
 func cleanBookDescription(book *models.Book) {
@@ -577,6 +595,16 @@ func (h *BookHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := h.books.Update(r.Context(), book); err != nil {
 		writeServerError(w, r, err)
 		return
+	}
+	// Unlocking every field hands the book back to metadata refresh, and that
+	// includes its series: forget the series the user took it out of (#2554).
+	// Series changes are admin only, so another user's unlock leaves them be.
+	if req.LockedFields != nil && len(book.LockedFields) == 0 && h.series != nil &&
+		auth.UserRoleFromContext(r.Context()) == auth.RoleAdmin {
+		if err := h.series.ClearBookSeriesExclusions(r.Context(), book.ID); err != nil {
+			writeServerError(w, r, err)
+			return
+		}
 	}
 
 	// Fire an immediate indexer search when this write leaves the book wanted
@@ -1302,6 +1330,17 @@ func (h *BookHandler) Rebind(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "This book changed while it was being rebound. Try again.", "reason": conflictReasonChanged})
 		return
 	}
+	// The previous work's provider editions describe the wrong work: their
+	// ISBN would keep steering search, and their unique ids keep them from
+	// the book they belong to (#2781). Only when the identity actually
+	// changed, and never an imported, selected or referenced edition.
+	if h.editions != nil && (oldForeignID != book.ForeignID || oldProvider != book.MetadataProvider) {
+		if n, err := h.editions.DeleteProviderEditionsAfterRebind(r.Context(), book.ID, book.ForeignID, book.MetadataProvider); err != nil {
+			slog.Warn("rebind: failed to remove the previous work's editions", "bookId", book.ID, "error", err)
+		} else if n > 0 {
+			slog.Info("rebind: removed the previous work's provider editions", "bookId", book.ID, "removed", n, "oldForeignId", oldForeignID)
+		}
+	}
 	// MediaType is in the preserved-fields list above because it belongs to the
 	// user, so a rebind is exactly the case the pin exists for: hydration must
 	// not widen the format the user keeps (#2768).
@@ -1404,7 +1443,11 @@ func preserveBookStateForMetadataMap(book *models.Book, target *models.Book) {
 	book.SortTitle = firstNonEmpty(target.SortTitle, target.Title)
 	book.OriginalTitle = target.OriginalTitle
 	book.Description = target.Description
-	book.ImageURL = target.ImageURL
+	// The new record's cover replaces the old one, except that a cover read
+	// from the user's own file survives a record that has none.
+	if target.ImageURL != "" || !covers.IsRef(book.ImageURL) {
+		book.ImageURL = target.ImageURL
+	}
 	book.ReleaseDate = target.ReleaseDate
 	book.Genres = target.Genres
 	if book.Genres == nil {
@@ -1454,8 +1497,9 @@ func bookMapAuthorMatches(current, target *models.Author) bool {
 }
 
 func authorNameAutoMatches(a, b string) bool {
-	match := textutil.MatchAuthorName(a, b)
-	return match.Kind == textutil.AuthorMatchExact || match.Kind == textutil.AuthorMatchFuzzyAuto
+	// The record was found by the book's own ASIN, so the work is settled and
+	// a pairing that only drops initials is enough (#2881).
+	return textutil.MatchAuthorName(a, b).ConfirmedByTitle()
 }
 
 // metadataProviderFromForeignID names the provider a book's foreign ID belongs

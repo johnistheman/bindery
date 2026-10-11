@@ -47,6 +47,7 @@ type SeriesHandler struct {
 	finder                      LibraryFinder
 	enhancedHardcoverEnvEnabled bool
 	editions                    *db.EditionRepo
+	profiles                    *db.MetadataProfileRepo
 
 	editionFetcher bookhydrate.EditionFetcher
 
@@ -99,6 +100,14 @@ func (h *SeriesHandler) WithFinder(f LibraryFinder) *SeriesHandler {
 // WithEditionHydration wires edition persistence for Hardcover catalog books.
 func (h *SeriesHandler) WithEditionHydration(editions *db.EditionRepo) *SeriesHandler {
 	h.editions = editions
+	return h
+}
+
+// WithMetadataProfiles attaches the metadata profile repo, so a series fill
+// screens the books it creates and re-queues through the same profile filters
+// an author sync applies (#2208). Without it nothing is filtered.
+func (h *SeriesHandler) WithMetadataProfiles(profiles *db.MetadataProfileRepo) *SeriesHandler {
+	h.profiles = profiles
 	return h
 }
 
@@ -209,6 +218,7 @@ func (h *SeriesHandler) List(w http.ResponseWriter, r *http.Request) {
 		if series == nil {
 			series = []models.Series{}
 		}
+		h.annotateSplitEditionParts(r.Context(), 0, series)
 		writeJSON(w, http.StatusOK, series)
 		return
 	}
@@ -222,6 +232,7 @@ func (h *SeriesHandler) List(w http.ResponseWriter, r *http.Request) {
 	if series == nil {
 		series = []models.Series{}
 	}
+	h.annotateSplitEditionParts(r.Context(), 0, series)
 	writeJSON(w, http.StatusOK, seriesListResponse{
 		Items:  series,
 		Total:  total,
@@ -249,7 +260,87 @@ func (h *SeriesHandler) Get(w http.ResponseWriter, r *http.Request) {
 	if s.Books == nil {
 		s.Books = []models.SeriesBook{}
 	}
-	writeJSON(w, http.StatusOK, s)
+	one := []models.Series{*s}
+	h.annotateSplitEditionParts(r.Context(), s.ID, one)
+	writeJSON(w, http.StatusOK, one[0])
+}
+
+// annotateSplitEditionParts fills SplitEditionPartBookIDs on each series
+// (#3048), so the series page can mark those rows and offer to unmonitor them.
+// Only books the series already lists are reported, which keeps the caller's
+// book scoping intact. seriesID 0 looks at every series in one query.
+func (h *SeriesHandler) annotateSplitEditionParts(ctx context.Context, seriesID int64, series []models.Series) {
+	if h.books == nil || len(series) == 0 {
+		return
+	}
+	parts, err := h.books.ListCoveredSplitEditionParts(ctx, seriesID)
+	if err != nil {
+		slog.Warn("series: failed to list split edition parts", "seriesID", seriesID, "error", err)
+		return
+	}
+	if len(parts) == 0 {
+		return
+	}
+	bySeries := make(map[int64]map[int64]struct{}, len(parts))
+	for _, p := range parts {
+		if bySeries[p.SeriesID] == nil {
+			bySeries[p.SeriesID] = make(map[int64]struct{})
+		}
+		bySeries[p.SeriesID][p.BookID] = struct{}{}
+	}
+	for i := range series {
+		s := &series[i]
+		covered := bySeries[s.ID]
+		if len(covered) == 0 {
+			continue
+		}
+		for _, member := range s.Books {
+			if _, ok := covered[member.BookID]; ok {
+				s.SplitEditionPartBookIDs = append(s.SplitEditionPartBookIDs, member.BookID)
+			}
+		}
+	}
+}
+
+// UnmonitorSplitEditionParts unmonitors the split edition parts of books the
+// library already has in this series (#3048): the "Part 1" and "Part 2" rows
+// a fill created before the series diff learned to recognise them (#2524). It
+// never deletes a row and never touches an imported book; a part can be
+// monitored again from its book page.
+func (h *SeriesHandler) UnmonitorSplitEditionParts(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(chi.URLParam(r, "id"), 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
+		return
+	}
+	series, err := h.series.GetByID(r.Context(), id)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	if series == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "series not found"})
+		return
+	}
+	parts, err := h.books.ListCoveredSplitEditionParts(r.Context(), id)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	ids := make([]int64, 0, len(parts))
+	for _, p := range parts {
+		if p.Monitored {
+			ids = append(ids, p.BookID)
+		}
+	}
+	n, err := h.books.UnmonitorNotImported(r.Context(), ids)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	slog.Info("series: unmonitored split edition parts of books already in the library",
+		"seriesID", id, "unmonitored", n)
+	writeJSON(w, http.StatusOK, map[string]int64{"unmonitored": n})
 }
 
 func (h *SeriesHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -408,7 +499,9 @@ func (h *SeriesHandler) RemoveBook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "series not found"})
 		return
 	}
-	if err := h.series.UnlinkBook(r.Context(), id, bookID); err != nil {
+	// The user is taking the book out of this series, so it is recorded: a
+	// refresh that still reports the book in it leaves it out (#2554).
+	if _, err := h.series.RemoveBookFromSeries(r.Context(), id, bookID); err != nil {
 		writeServerError(w, r, err)
 		return
 	}
@@ -569,6 +662,9 @@ func (h *SeriesHandler) Fill(w http.ResponseWriter, r *http.Request) {
 		if !h.requireEnhancedHardcoverAPI(w, r) {
 			return
 		}
+		// An explicit pick of one catalogue row is not screened by the
+		// metadata profile, the same exemption a single work add from an
+		// author page has (#1612): the user chose this book by name.
 		book, err := h.createMissingHardcoverBook(r.Context(), id, body)
 		if err != nil {
 			if errors.Is(err, errSeriesNotFound) {
@@ -603,8 +699,11 @@ func (h *SeriesHandler) Fill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	skippedByProfile := 0
 	if h.enhancedHardcoverEnabled(r.Context()) {
-		if err := h.createMissingHardcoverBooks(r.Context(), id, body.format()); err != nil {
+		skipped, err := h.createMissingHardcoverBooks(r.Context(), id, body.format())
+		skippedByProfile += skipped
+		if err != nil {
 			if !errors.Is(err, errSeriesMetadataProvider) {
 				writeServerError(w, r, err)
 				return
@@ -619,9 +718,49 @@ func (h *SeriesHandler) Fill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queued := 0
+	// Split edition parts of a book the library already has are not gaps
+	// (#3048). A fill made before #2524 created them as books, and this loop
+	// put them back on Wanted on every later fill. They are left exactly as
+	// they are; the series page offers to unmonitor them.
+	splitParts := make(map[int64]struct{})
+	if parts, err := h.books.ListCoveredSplitEditionParts(r.Context(), id); err != nil {
+		slog.Warn("series fill: failed to list split edition parts; queueing every book", "seriesID", id, "error", err)
+	} else {
+		for _, p := range parts {
+			splitParts[p.BookID] = struct{}{}
+		}
+	}
+	profiles := make(map[int64]*models.MetadataProfile)
+
+	queued, skippedSplitParts := 0, 0
 	searchTargets := make([]models.Book, 0, len(books))
 	for _, b := range books {
+		if b.Status != models.BookStatusImported {
+			if _, ok := splitParts[b.ID]; ok {
+				skippedSplitParts++
+				slog.Debug("series fill: not queueing a split edition part of a book already in the library",
+					"seriesID", id, "bookID", b.ID, "title", b.Title)
+				continue
+			}
+			// The same filters an author sync applies, judged from the
+			// stored row (#2208). Without this, a fill put the very box
+			// sets the profile screens out back on Wanted and monitored,
+			// including ones the user had unmonitored by hand. Only an
+			// unmonitored row is screened: a monitored one is already
+			// being sought, very possibly because the user added or
+			// monitored it on purpose, and there is no stored signal that
+			// tells the two apart. Leaving it queued changes nothing the
+			// wanted sweep would not do anyway, and it is not reported as
+			// skipped on every fill.
+			if !b.Monitored {
+				if reason := storedBookProfileFilter(h.profileForAuthor(r.Context(), profiles, b.AuthorID), &b); reason != "" {
+					skippedByProfile++
+					slog.Debug("series fill: not queueing a book the metadata profile filters out",
+						"seriesID", id, "bookID", b.ID, "title", b.Title, "filter", reason)
+					continue
+				}
+			}
+		}
 		didQueue, queuedBook, err := h.queueSeriesBook(r.Context(), b)
 		if err != nil {
 			slog.Warn("series fill: failed to update book", "book", b.Title, "error", err)
@@ -635,7 +774,31 @@ func (h *SeriesHandler) Fill(w http.ResponseWriter, r *http.Request) {
 
 	h.fanOutSeriesSearches(r.Context(), searchTargets)
 
-	writeJSON(w, http.StatusOK, map[string]int{"queued": queued})
+	writeJSON(w, http.StatusOK, map[string]int{
+		"queued":            queued,
+		"skippedByProfile":  skippedByProfile,
+		"skippedSplitParts": skippedSplitParts,
+	})
+}
+
+// profileForAuthor resolves an author's effective metadata profile, caching
+// it in cache for the length of one fill. Nil filters nothing.
+func (h *SeriesHandler) profileForAuthor(ctx context.Context, cache map[int64]*models.MetadataProfile, authorID int64) *models.MetadataProfile {
+	if h.profiles == nil {
+		return nil
+	}
+	if p, ok := cache[authorID]; ok {
+		return p
+	}
+	var author *models.Author
+	if h.authors != nil {
+		if a, err := h.authors.GetByID(ctx, authorID); err == nil {
+			author = a
+		}
+	}
+	p := effectiveMetadataProfile(ctx, h.profiles, author)
+	cache[authorID] = p
+	return p
 }
 
 // fanOutSeriesSearches dispatches per-book indexer searches for a Series.Fill
@@ -753,20 +916,28 @@ type seriesHardcoverDiffBook struct {
 }
 
 type seriesHardcoverDiffResponse struct {
-	SeriesID     int64                       `json:"seriesId"`
-	Link         *models.SeriesHardcoverLink `json:"link"`
-	Present      []seriesHardcoverDiffBook   `json:"present"`
-	Missing      []seriesHardcoverDiffBook   `json:"missing"`
-	LocalOnly    []seriesHardcoverDiffBook   `json:"localOnly"`
-	Uncertain    []seriesHardcoverDiffBook   `json:"uncertain"`
-	PresentCount int                         `json:"presentCount"`
-	MissingCount int                         `json:"missingCount"`
+	SeriesID  int64                       `json:"seriesId"`
+	Link      *models.SeriesHardcoverLink `json:"link"`
+	Present   []seriesHardcoverDiffBook   `json:"present"`
+	Missing   []seriesHardcoverDiffBook   `json:"missing"`
+	LocalOnly []seriesHardcoverDiffBook   `json:"localOnly"`
+	Uncertain []seriesHardcoverDiffBook   `json:"uncertain"`
+	// Covered is a catalogue row that is not a missing volume but a split
+	// edition (#2524) of a book already present: the row's own LocalBookID/
+	// LocalTitle point at the whole work that covers it, not at a row of its
+	// own. Never counted in MissingCount, never offered to Fill.
+	Covered      []seriesHardcoverDiffBook `json:"covered"`
+	PresentCount int                       `json:"presentCount"`
+	MissingCount int                       `json:"missingCount"`
 }
 
 var (
 	errSeriesMetadataProvider    = errors.New("series metadata provider")
 	errSeriesNotFound            = errors.New("series not found")
 	errSeriesCatalogBookNotFound = errors.New("series catalog book not found")
+	// errSeriesBookFilteredByProfile marks a catalogue book a bulk fill did
+	// not create because the author's metadata profile filters it out (#2208).
+	errSeriesBookFilteredByProfile = errors.New("series catalog book filtered by metadata profile")
 )
 
 func (h *SeriesHandler) SearchHardcover(w http.ResponseWriter, r *http.Request) {
@@ -1135,8 +1306,9 @@ func (h *SeriesHandler) seriesHasAuthorAgreement(ctx context.Context, series *mo
 				authorsByID[local.Book.AuthorID] = localAuthor
 			}
 		}
-		match := textutil.MatchAuthorName(localAuthor, candidateAuthor)
-		if match.Kind == textutil.AuthorMatchExact || match.Kind == textutil.AuthorMatchFuzzyAuto {
+		// The series titles already agree, so a pairing that only drops
+		// initials is enough here (#2881).
+		if textutil.MatchAuthorName(localAuthor, candidateAuthor).ConfirmedByTitle() {
 			return true, nil
 		}
 	}
@@ -1267,6 +1439,7 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 		Missing:   []seriesHardcoverDiffBook{},
 		LocalOnly: []seriesHardcoverDiffBook{},
 		Uncertain: []seriesHardcoverDiffBook{},
+		Covered:   []seriesHardcoverDiffBook{},
 	}
 	// matchedCatalog doubles as the exclusion set for bestCatalogMatch: a
 	// catalog entry a previous local book already claimed is off the table for
@@ -1275,6 +1448,12 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 	// and pushed the second local's real catalog entry into Missing behind an
 	// Add button that ensureHardcoverCatalogBook's guards then refuse.
 	matchedCatalog := make(map[int]struct{})
+	// presentWholes collects the subset of Present rows eligible to cover a
+	// split-edition part (#2524/#3048): not excluded, and imported or
+	// monitored, the same gate db.ListCoveredSplitEditionParts applies to
+	// stored rows, so the diff and that sweep never disagree about which
+	// wholes cover which parts.
+	presentWholes := make([]presentWhole, 0, len(series.Books))
 	// Identities bind first (#2553). Assigning in library order let an
 	// earlier local's fuzzy title match claim the catalogue slot that a later
 	// local owned by foreign ID: "He Who Fights with Monsters 4" took volume
@@ -1369,6 +1548,14 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 		if match.score >= 90 || match.foreignID {
 			diff.Present = append(diff.Present, item)
 			matchedCatalog[match.index] = struct{}{}
+			if eligibleSplitEditionWhole(local.Book) {
+				presentWholes = append(presentWholes, presentWhole{
+					position:    item.Position,
+					title:       item.Title,
+					localBookID: local.Book.ID,
+					localTitle:  local.Book.Title,
+				})
+			}
 		} else if match.score >= 70 {
 			diff.Uncertain = append(diff.Uncertain, item)
 			matchedCatalog[match.index] = struct{}{}
@@ -1388,6 +1575,14 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 		if title := firstNonEmpty(book.Book.Title, book.Title); metadata.IsUnambiguousBundleTitle(title) {
 			continue
 		}
+		if whole, ok := splitEditionWhole(book, presentWholes); ok {
+			item := catalogDiffBook(book, catalog.AuthorName)
+			id := whole.localBookID
+			item.LocalBookID = &id
+			item.LocalTitle = whole.localTitle
+			diff.Covered = append(diff.Covered, item)
+			continue
+		}
 		item := catalogDiffBook(book, catalog.AuthorName)
 		enrichMissingDiffBook(ctx, books, userID, book, &item)
 		diff.Missing = append(diff.Missing, item)
@@ -1395,6 +1590,67 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 	diff.PresentCount = len(diff.Present)
 	diff.MissingCount = len(diff.Missing)
 	return diff
+}
+
+// presentWhole is the subset of a Present row that splitEditionWhole needs:
+// a catalogue diff row the library holds, eligible to cover a split-edition
+// part (#2524/#3048). Kept separate from seriesHardcoverDiffBook so the
+// eligibility gate (not excluded, imported or monitored) is decided once,
+// where local.Book is still in scope, rather than re-derived from the API
+// response shape.
+type presentWhole struct {
+	position    string
+	title       string
+	localBookID int64
+	localTitle  string
+}
+
+// eligibleSplitEditionWhole reports whether book is a book the user actually
+// has or wants, so it is allowed to cover a split-edition part (#3048): not
+// excluded, and imported or monitored.
+//
+// This MUST stay in agreement with the SQL predicate in
+// db.ListCoveredSplitEditionParts (internal/db/split_edition_parts.go),
+// which applies the identical rule to rows already stored. The two cannot
+// share one literal implementation across the SQL/Go boundary, so an
+// eligibility change here needs the same change made there, and vice versa,
+// or the catalogue diff and the stored-row sweep will disagree about which
+// wholes cover which parts.
+func eligibleSplitEditionWhole(b *models.Book) bool {
+	return !b.Excluded && (b.Status == models.BookStatusImported || b.Monitored)
+}
+
+// splitEditionWhole reports whether book is a split-edition part of some
+// already-present, eligible whole work, and if so returns that whole.
+//
+// #2524/#3048: some Hardcover catalogues list a novel AND its split parts at
+// fractional positions under the novel's own position — Stormlight's "The
+// Way of Kings" at 1 alongside "…, Part 1" and "…, Part 2" at 1.1 and 1.2.
+// Owning the whole novel should not leave its own parts reading as missing
+// volumes, counting against the series, and sitting behind an Add button
+// that would create and queue a download for text already on the shelf.
+//
+// The two-signal rule itself is seriesmatch.SplitEditionPartOf, shared with
+// db.ListCoveredSplitEditionParts (#3048), which applies the same rule to
+// rows already stored for an install that filled before this landed. A
+// series represented ONLY by its split parts — Wheel of Time's "Two Volume
+// Edition", where there is no unsplit whole at the integer position — never
+// matches this, because there is no eligible whole to match against; its
+// parts are the real volumes and stay Missing.
+//
+// wholes is pre-filtered to Present rows that are also eligible (not
+// excluded, imported or monitored), so an excluded or purely-wanted,
+// unmonitored Present row covers nothing — the same gate the stored-row
+// sweep applies, so the two never disagree about which wholes cover which
+// parts.
+func splitEditionWhole(book metadata.SeriesCatalogBook, wholes []presentWhole) (presentWhole, bool) {
+	partTitle := firstNonEmpty(book.Book.Title, book.Title)
+	for _, whole := range wholes {
+		if seriesmatch.SplitEditionPartOf(partTitle, book.Position, whole.title, whole.position) {
+			return whole, true
+		}
+	}
+	return presentWhole{}, false
 }
 
 // logDiffDecision records which catalogue entry a local series book bound
@@ -1616,27 +1872,30 @@ func localDiffBook(local models.SeriesBook) seriesHardcoverDiffBook {
 	return item
 }
 
-func (h *SeriesHandler) createMissingHardcoverBooks(ctx context.Context, seriesID int64, format requestedFormat) error {
+// createMissingHardcoverBooks creates every missing catalogue book of a
+// series, and reports how many the metadata profile filtered out.
+func (h *SeriesHandler) createMissingHardcoverBooks(ctx context.Context, seriesID int64, format requestedFormat) (int, error) {
 	if !h.enhancedHardcoverEnabled(ctx) {
-		return nil
+		return 0, nil
 	}
 	if h.meta == nil || h.authors == nil {
-		return nil
+		return 0, nil
 	}
 	series, err := h.series.GetByID(ctx, seriesID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if series == nil || series.HardcoverLink == nil {
-		return nil
+		return 0, nil
 	}
 	catalog, err := h.meta.GetSeriesCatalog(ctx, series.HardcoverLink.HardcoverSeriesID)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errSeriesMetadataProvider, err)
+		return 0, fmt.Errorf("%w: %w", errSeriesMetadataProvider, err)
 	}
 	if catalog == nil {
-		return nil
+		return 0, nil
 	}
+	filtered := 0
 	// Write path: only ForeignBookID/Position are consumed below, so skip the
 	// per-row library cross-reference by passing a nil books repo.
 	diff := buildHardcoverDiff(ctx, nil, 0, series, series.HardcoverLink, catalog)
@@ -1645,7 +1904,11 @@ func (h *SeriesHandler) createMissingHardcoverBooks(ctx context.Context, seriesI
 		if !ok {
 			continue
 		}
-		if _, err := h.ensureHardcoverCatalogBook(ctx, series, catalog.AuthorName, catalogBook, format); err != nil {
+		if _, err := h.ensureHardcoverCatalogBook(ctx, series, catalog.AuthorName, catalogBook, format, true, false); err != nil {
+			if errors.Is(err, errSeriesBookFilteredByProfile) {
+				filtered++
+				continue
+			}
 			// One bad volume must not truncate the rest of the series
 			// (#1682). This used to return, so a single failure part-way
 			// through silently abandoned every remaining volume and the user
@@ -1654,7 +1917,7 @@ func (h *SeriesHandler) createMissingHardcoverBooks(ctx context.Context, seriesI
 			// uses. An upstream metadata failure still propagates, since that
 			// is a whole-catalog problem rather than one book's.
 			if errors.Is(err, errSeriesMetadataProvider) {
-				return err
+				return filtered, err
 			}
 			slog.Warn("series fill: failed to create catalog book; continuing",
 				"seriesID", seriesID, "foreignBookID", missing.ForeignBookID,
@@ -1662,7 +1925,7 @@ func (h *SeriesHandler) createMissingHardcoverBooks(ctx context.Context, seriesI
 			continue
 		}
 	}
-	return nil
+	return filtered, nil
 }
 
 func (h *SeriesHandler) createMissingHardcoverBook(ctx context.Context, seriesID int64, selector seriesFillRequest) (*models.Book, error) {
@@ -1699,7 +1962,7 @@ func (h *SeriesHandler) createMissingHardcoverBook(ctx context.Context, seriesID
 		if !ok {
 			return nil, errSeriesCatalogBookNotFound
 		}
-		return h.ensureHardcoverCatalogBook(ctx, series, catalog.AuthorName, catalogBook, selector.format())
+		return h.ensureHardcoverCatalogBook(ctx, series, catalog.AuthorName, catalogBook, selector.format(), false, true)
 	}
 	return nil, errSeriesCatalogBookNotFound
 }
@@ -1731,9 +1994,31 @@ func findCatalogBook(books []metadata.SeriesCatalogBook, foreignID, position str
 	return metadata.SeriesCatalogBook{}, false
 }
 
-func (h *SeriesHandler) ensureHardcoverCatalogBook(ctx context.Context, series *models.Series, fallbackAuthor string, catalogBook metadata.SeriesCatalogBook, format requestedFormat) (*models.Book, error) {
+// ensureHardcoverCatalogBook resolves one catalogue book to a library book,
+// creating it when the library has none. applyProfile screens a book it is
+// about to create through the author's metadata profile (#2208), returning
+// errSeriesBookFilteredByProfile when a filter rejects it. A bulk fill sets
+// it and an explicit single add does not. A book that already exists is
+// linked whatever the profile says, the same way an author sync keeps
+// maintaining books it already has.
+//
+// explicit marks the user asking for this one book (the Add button), as
+// opposed to a bulk fill. It forgets a record of the user having taken the
+// book out of this series before linking it, the way adding by hand does;
+// without it the exclusion silently refused the link and the book stayed
+// missing for good (#2554). A bulk fill keeps honouring the exclusion.
+func (h *SeriesHandler) ensureHardcoverCatalogBook(ctx context.Context, series *models.Series, fallbackAuthor string, catalogBook metadata.SeriesCatalogBook, format requestedFormat, applyProfile, explicit bool) (*models.Book, error) {
 	if series == nil {
 		return nil, errSeriesNotFound
+	}
+	link := func(target *models.Book) error {
+		if explicit {
+			if err := h.series.ClearBookSeriesExclusion(ctx, series.ID, target.ID); err != nil {
+				return err
+			}
+		}
+		_, err := h.series.LinkBookPreservingPrimary(ctx, series.ID, target.ID, catalogBook.Position)
+		return err
 	}
 	// A series catalog is a metadata ingestion source like an author
 	// catalogue, so the unconditional bundle prune (#1780) has to apply here
@@ -1773,8 +2058,7 @@ func (h *SeriesHandler) ensureHardcoverCatalogBook(ctx context.Context, series *
 			"matchedForeignID", existing.ForeignID,
 			"matchedStatus", existing.Status,
 			"matchedBy", "identity")
-		_, err := h.series.LinkBookPreservingPrimary(ctx, series.ID, existing.ID, catalogBook.Position)
-		return existing, err
+		return existing, link(existing)
 	}
 
 	author := book.Author
@@ -1808,7 +2092,30 @@ func (h *SeriesHandler) ensureHardcoverCatalogBook(ctx context.Context, series *
 	if skip {
 		return nil, nil
 	}
+	profileFiltered := func(profileAuthor *models.Author) bool {
+		if !applyProfile {
+			return false
+		}
+		candidate := book
+		candidate.Title = firstNonEmpty(book.Title, catalogBook.Title)
+		p := effectiveMetadataProfile(ctx, h.profiles, profileAuthor)
+		reason := catalogBookProfileFilter(ctx, h.meta, p, &candidate)
+		if reason == "" {
+			return false
+		}
+		slog.Debug("series fill: not creating a catalog book the metadata profile filters out",
+			"seriesID", series.ID, "title", candidate.Title, "foreignID", candidate.ForeignID,
+			"position", catalogBook.Position, "filter", reason)
+		return true
+	}
 	if storedAuthor == nil {
+		// A brand new author has no books for the title match below to
+		// find, so screen now, before creating an author row for a book that
+		// will not be created.
+		if profileFiltered(author) {
+			return nil, errSeriesBookFilteredByProfile
+		}
+		applyProfile = false
 		// Backfilled from a series catalogue, so there is no user monitor
 		// choice to carry — take the install-wide default (#1666).
 		db.ApplyAuthorMonitorDefaults(ctx, h.settings, author)
@@ -1915,11 +2222,13 @@ func (h *SeriesHandler) ensureHardcoverCatalogBook(ctx context.Context, series *
 			"matchedStatus", best.Status,
 			"matchedBy", "title",
 			"score", bestScore)
-		_, err := h.series.LinkBookPreservingPrimary(ctx, series.ID, best.ID, catalogBook.Position)
-		return best, err
+		return best, link(best)
 	}
 	if blockedByExcludedTitle {
 		return nil, nil
+	}
+	if profileFiltered(storedAuthor) {
+		return nil, errSeriesBookFilteredByProfile
 	}
 
 	book.AuthorID = storedAuthor.ID

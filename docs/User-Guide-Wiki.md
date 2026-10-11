@@ -87,6 +87,22 @@ nothing populated the catalogue first. That list is where you can adopt them.
 The sequence that works is always: **populate the catalogue, then scan**. See
 [Bringing in an existing library](#bringing-in-an-existing-library) below.
 
+The scan leaves out folders that are not library content: known junk and sync
+folders (`.torrents`, `.Trash-*`, `.Trashes`, `.incomplete`,
+`.bindery-stage-*`, `.AppleDouble`, `.AppleDB`, `.Spotlight-V100`,
+`.fseventsd`, `.TemporaryItems`, `.DocumentRevisions-V100`, `.thumbnails`,
+`.stfolder`, `.stversions`, `.syncthing.*`, `.sync`, `.git`, `.svn`,
+`.recycle` and `.snapshot`, in any letter case), any folder holding a
+`.binderyignore` file (an empty file is enough; everything under that folder
+is skipped), and the download folders (`BINDERY_DOWNLOAD_DIR`,
+`BINDERY_AUDIOBOOK_DOWNLOAD_DIR`) when they sit inside a library folder. Other
+folders that start with a dot are scanned, because a book folder can start
+with one (`...And Then There Were None`, `.hack Sign`); to leave one out, put
+a `.binderyignore` file in it. The same goes for the check that skips
+searching for books you already have, and for importing a folder from
+**Import**. Entries an earlier scan listed from those folders disappear on the
+next scan.
+
 ### 2. Status and Monitored are two different switches
 
 Every book has a **status** — its acquisition lifecycle:
@@ -205,10 +221,15 @@ monitored.
 | **Library imports** (Calibre, Readarr, ABS, Goodreads CSV, author list) | Your existing catalogue — see the next section |
 
 **Add Author** and **Add Book** open the same dialog. Type an author name, a
-title, an ISBN or an ASIN and press Enter; the results list authors first, each
-followed by the books the provider attributes to them, with any remaining books
-under a *Books* divider. Which button you pressed only changes the placeholder.
-What you pick decides what happens next: an author row leads to the monitoring
+title, an ISBN or an ASIN and press Enter. The **All / Books / Authors** control
+under the search box picks what the results show: *Books* is a flat list of
+books, best title match first; *Authors* is author rows only; *All* lists
+authors first, each followed by the books the provider attributes to them, with
+any remaining books under a *Books* divider. **Add Book** opens on *Books*,
+**Add Author** on *Authors*, and the header search on *All*. Every search looks
+up both kinds, so switching views is instant, and each view shows how many
+results it holds. Which button you pressed otherwise only changes the
+placeholder. What you pick decides what happens next: an author row leads to the monitoring
 step (metadata profile, root folder, media type, monitor mode, auto-grab), a
 book row to the single-book step (cover, identifiers, format, search on add).
 Rows that already match something in your library say **In your library** with
@@ -549,15 +570,18 @@ to the records. Things worth knowing before you judge the results:
   per book with a sentence saying why and what to do: add the author, confirm
   a suggested book, or choose one. See [Adopting files already in your
   library](#adopting-files-already-in-your-library).
-- **Fix match moves and renames the file.** When a book page shows the wrong
-  file, the **Fix match** button reassigns it to the book you pick. That runs
-  the full import, so the file is moved into the target book's folder and
+- **Fix match corrects the link and leaves the file alone by default.** When a
+  book page shows the wrong file, the **Fix match** button reassigns it to the
+  book you pick. After you pick the book, the modal asks what should happen to
+  the file. **Correct the match only**, the default, keeps the file where it
+  is under its current name and only changes which book it belongs to, the way
+  Readarr's fix match does (#2055). **Also move and rename the file** runs the
+  full import instead, so the file is moved into the target book's folder and
   renamed from your naming template, replacing your own layout for that file.
-  The modal warns you and shows the exact destination path before you confirm,
-  and nothing happens until you do; the move itself then runs in the background
-  and Bindery cannot undo it for you. Reassigning the metadata link *without*
-  relocating the file is not available yet (#2055). History records the move
-  as **File Moved**, naming the book the file came from.
+  Choosing it shows the exact destination path before you confirm; the move
+  then runs in the background and Bindery cannot undo it for you. Nothing
+  happens until you confirm either way. History records the change as **File
+  Moved**, naming the book the file came from.
 - **An import never takes a file another book already tracks.** If a download
   or a manual import lands on a path that a different book already has, the
   import stops with **Import Blocked** and the Queue row names that book and
@@ -569,6 +593,16 @@ to the records. Things worth knowing before you judge the results:
   over automatically.
 - A folder holding both an ebook and an audiobook for the same book attaches
   both in a single scan — one file per format, so a second scan is not needed.
+- In a **flat** layout, where audiobooks sit straight in the author folder as
+  `Author/Title.mp3`, each file is matched on its own. A tracked audiobook only
+  claims the other files in that folder that are tracks of it (the same name
+  up to a part, track, chapter or disc number, written as digits or as a word
+  like `Part Two`, or a name that starts with its number such as `02.mp3` or
+  `02 - Chapter Two.mp3`; a chapter title after the number is ignored), so
+  another audiobook by the same author beside it is attached to its own book
+  or listed as unmatched (#1985). Titles that differ only by a number, such as
+  `Saga 1.mp3` and `Saga 2.mp3`, still read as tracks of one audiobook; give
+  each book its own folder to keep them apart.
 - A PDF, TXT, RTF, CBZ or CBR sitting in a folder that also holds audio is treated as
   an **audiobook supplement** (the companion PDF Audible-style releases ship)
   and is not attached as the book's ebook. The same file in a folder with no
@@ -779,6 +813,11 @@ like everything else on that tab that names server paths.
   row. **Without an API token (Settings → API Keys) Hardcover is silently
   skipped everywhere.** The free token is the single highest-value config for
   metadata quality.
+- **Covers from your own files.** When no metadata provider has a cover for
+  a book, Bindery uses the art embedded in the file you import (M4B, MP3,
+  FLAC, EPUB), or a `cover.jpg` / `folder.jpg` in a multi-file audiobook's
+  folder. Books already in your library pick theirs up on the next library
+  scan. A provider's cover is never replaced, so this only fills blanks.
 
   It can also be promoted to *primary*, which is worth doing if OpenLibrary
   refreshes bury your wanted list in translations and box sets. Hardcover's
@@ -791,15 +830,26 @@ like everything else on that tab that names server paths.
   selector stays disabled until you save one.
 
   When a metadata profile restricts languages, Bindery checks Hardcover's
-  editions for each author work in one batched request. A translated default
-  edition is not treated as the language of the whole work: any edition in an
-  allowed language keeps the work, while a work is rejected as non-allowed
-  only when the lookup completes and finds no allowed edition. This filtering
-  evidence does not rewrite the displayed language, which remains the
+  editions for each author work in one batched request. This happens whether
+  Hardcover is the primary provider or supplements OpenLibrary, so the
+  Hardcover works merged into an OpenLibrary author are checked too. A
+  translated default edition is not treated as the language of the whole work:
+  any edition in an allowed language keeps the work, while a work is rejected
+  as non-allowed only when the lookup completes and finds no allowed edition
+  and some edition, default or not, records another language. A work with no
+  language on any edition stays unknown. This filtering evidence does not
+  rewrite the displayed language, which remains the
   provider's preferred/default language or the user's locked value. If the
   evidence is indeterminate or its lookup fails, normal refreshes fall through
   to the existing edition-sampled, author-majority, and scalar language before
-  applying **When book language is unknown**. **Reconcile catalogue** treats a
+  applying **When book language is unknown**. The author-majority fallback is
+  not applied to a work whose title is written in a different script from the
+  author's other titles (a Cyrillic title in an English author's catalogue, for
+  example), so such a work stays unknown. OpenLibrary edition sampling only
+  runs for OpenLibrary works, and takes the language and a missing cover from
+  the edition OpenLibrary features on the work's own page first, falling back
+  to a small sample of its editions (and a cover in the sampled language) only
+  for what that edition lacks. **Reconcile catalogue** treats a
   failed lookup as indeterminate rather than offering the row for removal.
 - **Google Books** (free API key) and **Audnexus/Audible** (audiobook
   narrator, duration, by ASIN) enrich further.
@@ -858,10 +908,12 @@ When metadata is wrong, you have three levels of fix:
 2. **Re-bind** the book, or **relink** the author ("Find better match"), to a
    different provider record when the match itself is wrong.
 3. A **metadata profile** (languages, minimum page count, minimum edition
-   count, skip part books) filters what a catalogue sync lets in. Filling a
-   series skips every metadata profile filter today, the edition count included
-   ([#2208](https://github.com/vavallee/bindery/issues/2208)), so a filled
-   series can still bring in thin works.
+   count, skip part books) filters what a catalogue sync lets in, and what
+   **Fill gaps** or **add all** on a series creates
+   ([#2208](https://github.com/vavallee/bindery/issues/2208)). Adding a single
+   row from a series is an explicit pick and is not filtered. Filters screen
+   books as they arrive; **Reconcile catalogue** on an author applies them to
+   books already stored.
 
 Box sets need no setting. A work whose title plainly names a bundle ("... Box
 Set", "3 Books Set", "Carton of 10 Signed Copies") is dropped from every
@@ -945,9 +997,11 @@ and each new book is monitored or not according to the author's monitor mode.
 - **Opting an author out:** set their **Monitor new items** to *Don't add
   them*. Unmonitored authors and Calibre library authors are not checked
   either.
-- **When a provider struggles:** when OpenLibrary or Hardcover refuses with a
-  rate limit, the pass stops and the remaining authors wait for the next
-  hour. When three authors in a row fail because the provider is down (server
+- **When a provider struggles:** every metadata provider waits and retries
+  when it is told to slow down, honouring the provider's own `Retry-After`,
+  and holds its other requests for that long too. When a provider still
+  refuses with a rate limit after that, the pass stops and the remaining
+  authors wait for the next hour. When three authors in a row fail because the provider is down (server
   errors, network failures, timeouts), the pass stops too, and those three
   are tried again in about six hours rather than a week later. An error about
   one author, such as an author the provider no longer knows, counts that
@@ -1006,7 +1060,8 @@ selection control and cannot be sent for removal.
 slightly different titles — "The Martian" and "Martian", "Dune" and "Dune
 (Unabridged)". Open the author and choose **More → Review duplicates…** to see
 groups of titles that look like the same book. Each group shows which rule
-matched (identical after normalisation, a leading article dropped, an edition
+matched (identical after normalisation, a leading article dropped or filed behind
+a comma as in "Trace of Death, A", an edition
 marker dropped, or one title being the main title or subtitle of the other),
 and each row shows the rules that pulled it in. A main title or subtitle match
 only counts at a colon, bracket or spaced dash, so Asimov's "Foundation" is not

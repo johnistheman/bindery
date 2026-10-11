@@ -683,6 +683,39 @@ describe('AuthorDetailPage', () => {
     expect(screen.queryByText('Plain Ebook Wanted')).not.toBeInTheDocument()
   })
 
+  it('lists a partially owned dual-format book under Imported and counts it in library (#3132)', async () => {
+    renderAuthorDetailPage(
+      [
+        makeBook({
+          id: 621, title: 'Partly Owned', status: 'wanted', monitored: true,
+          mediaType: 'both', ebookFilePath: '/books/loop.epub', audiobookFilePath: '',
+        }),
+        makeBook({ id: 622, title: 'Nothing Owned', status: 'wanted', monitored: true, mediaType: 'both' }),
+      ],
+      'table',
+    )
+    await screen.findByText('Partly Owned')
+    const stats = await screen.findByTestId('author-stats')
+    expect(within(stats).getByText('In library').parentElement).toHaveTextContent('1')
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'imported' } })
+    expect(screen.getByText('Partly Owned')).toBeInTheDocument()
+    expect(screen.queryByText('Nothing Owned')).not.toBeInTheDocument()
+
+    // Still wanted too: one format is missing.
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'wanted' } })
+    expect(screen.getByText('Partly Owned')).toBeInTheDocument()
+    expect(screen.getByText('Nothing Owned')).toBeInTheDocument()
+
+    // With a format chip the file has to be of that format: the ebook only
+    // book is not in the audiobook library, matching the Books page.
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'imported' } })
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'audiobook' } })
+    expect(screen.queryByText('Partly Owned')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Type'), { target: { value: 'ebook' } })
+    expect(screen.getByText('Partly Owned')).toBeInTheDocument()
+  })
+
   it("includes 'both' books under either media-type chip (#1406)", async () => {
     renderAuthorDetailPage(
       [
@@ -846,6 +879,133 @@ describe('AuthorDetailPage — toolbar and stats', () => {
 
     renderAuthorDetailPage([makeBook({ id: 1, title: 'A', status: 'imported' })])
     expect(await screen.findByLabelText('Status')).toHaveValue('skipped')
+  })
+
+  // Grid headings in document order — the order the user sees.
+  const shownTitles = (titles: string[]) =>
+    screen.getAllByRole('heading')
+      .map(h => h.textContent ?? '')
+      .filter(txt => titles.includes(txt))
+
+  it('sorts by title, publication date and date added from the Sort select', async () => {
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Beta', status: 'imported', releaseDate: '2010-01-01T00:00:00Z', createdAt: '2024-03-01T00:00:00Z' }),
+      makeBook({ id: 2, title: 'Gamma', status: 'imported', releaseDate: '2020-01-01T00:00:00Z', createdAt: '2024-01-01T00:00:00Z' }),
+      makeBook({ id: 3, title: 'Alpha', status: 'imported', releaseDate: '2015-01-01T00:00:00Z', createdAt: '2024-02-01T00:00:00Z' }),
+    ])
+    const all = ['Alpha', 'Beta', 'Gamma']
+    await screen.findByRole('heading', { name: 'Beta' })
+    expect(shownTitles(all)).toEqual(['Beta', 'Gamma', 'Alpha'])
+
+    const sort = screen.getByLabelText('Sort')
+    fireEvent.change(sort, { target: { value: 'title-az' } })
+    expect(shownTitles(all)).toEqual(['Alpha', 'Beta', 'Gamma'])
+    fireEvent.change(sort, { target: { value: 'title-za' } })
+    expect(shownTitles(all)).toEqual(['Gamma', 'Beta', 'Alpha'])
+    fireEvent.change(sort, { target: { value: 'date-new' } })
+    expect(shownTitles(all)).toEqual(['Gamma', 'Alpha', 'Beta'])
+    fireEvent.change(sort, { target: { value: 'date-old' } })
+    expect(shownTitles(all)).toEqual(['Beta', 'Alpha', 'Gamma'])
+    fireEvent.change(sort, { target: { value: 'added-new' } })
+    expect(shownTitles(all)).toEqual(['Beta', 'Alpha', 'Gamma'])
+    fireEvent.change(sort, { target: { value: 'added-old' } })
+    expect(shownTitles(all)).toEqual(['Gamma', 'Alpha', 'Beta'])
+  })
+
+  it('sorts undated books last in both date directions', async () => {
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Undated', status: 'imported' }),
+      makeBook({ id: 2, title: 'Old', status: 'imported', releaseDate: '2001-01-01T00:00:00Z' }),
+      makeBook({ id: 3, title: 'New', status: 'imported', releaseDate: '2021-01-01T00:00:00Z' }),
+    ])
+    const all = ['Undated', 'Old', 'New']
+    await screen.findByRole('heading', { name: 'Undated' })
+    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'date-old' } })
+    expect(shownTitles(all)).toEqual(['Old', 'New', 'Undated'])
+    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'date-new' } })
+    expect(shownTitles(all)).toEqual(['New', 'Old', 'Undated'])
+  })
+
+  it('persists the sort and migrates the old Published-header setting', async () => {
+    localStorage.setItem('bindery.sort.author-detail.date', 'desc')
+    const { unmount } = renderAuthorDetailPage([makeBook({ id: 1, title: 'A', status: 'imported' })])
+    expect(await screen.findByLabelText('Sort')).toHaveValue('date-new')
+    fireEvent.change(screen.getByLabelText('Sort'), { target: { value: 'title-za' } })
+    unmount()
+
+    renderAuthorDetailPage([makeBook({ id: 1, title: 'A', status: 'imported' })])
+    expect(await screen.findByLabelText('Sort')).toHaveValue('title-za')
+  })
+
+  it('sorts from the Title and Published column headers in table view', async () => {
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Beta', status: 'imported', releaseDate: '2010-01-01T00:00:00Z' }),
+      makeBook({ id: 2, title: 'Alpha', status: 'imported', releaseDate: '2020-01-01T00:00:00Z' }),
+    ], 'table')
+    await screen.findByText('Beta')
+    fireEvent.click(screen.getByRole('columnheader', { name: /Title/ }))
+    expect(screen.getByLabelText('Sort')).toHaveValue('title-az')
+    fireEvent.click(screen.getByRole('columnheader', { name: /Title/ }))
+    expect(screen.getByLabelText('Sort')).toHaveValue('title-za')
+    fireEvent.click(screen.getByRole('columnheader', { name: /Published/ }))
+    expect(screen.getByLabelText('Sort')).toHaveValue('date-old')
+  })
+
+  it('filters by monitored state', async () => {
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Watched', status: 'wanted', monitored: true }),
+      makeBook({ id: 2, title: 'Ignored', status: 'wanted', monitored: false }),
+    ])
+    await screen.findByRole('heading', { name: 'Watched' })
+    fireEvent.change(screen.getByLabelText('Monitored'), { target: { value: 'unmonitored' } })
+    expect(screen.queryByRole('heading', { name: 'Watched' })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Ignored' })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Monitored'), { target: { value: 'monitored' } })
+    expect(screen.getByRole('heading', { name: 'Watched' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Ignored' })).toBeNull()
+  })
+
+  it('offers a Language filter only when the books span more than one', async () => {
+    const { unmount } = renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'English One', status: 'imported', language: 'eng' }),
+      makeBook({ id: 2, title: 'English Two', status: 'imported', language: 'eng' }),
+    ])
+    await screen.findByRole('heading', { name: 'English One' })
+    expect(screen.queryByLabelText('Language')).toBeNull()
+    unmount()
+
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'English One', status: 'imported', language: 'eng' }),
+      makeBook({ id: 2, title: 'Deutsch Eins', status: 'imported', language: 'ger' }),
+    ])
+    await screen.findByRole('heading', { name: 'English One' })
+    fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'ger' } })
+    expect(screen.queryByRole('heading', { name: 'English One' })).toBeNull()
+    expect(screen.getByRole('heading', { name: 'Deutsch Eins' })).toBeInTheDocument()
+  })
+
+  it('treats "en" and "eng" as one language in the Language filter', async () => {
+    const { unmount } = renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Two Letter', status: 'imported', language: 'en' }),
+      makeBook({ id: 2, title: 'Three Letter', status: 'imported', language: 'eng' }),
+    ])
+    await screen.findByRole('heading', { name: 'Two Letter' })
+    // Both spellings are English, so there is nothing to choose between.
+    expect(screen.queryByLabelText('Language')).toBeNull()
+    unmount()
+
+    renderAuthorDetailPage([
+      makeBook({ id: 1, title: 'Two Letter', status: 'imported', language: 'en' }),
+      makeBook({ id: 2, title: 'Three Letter', status: 'imported', language: 'eng' }),
+      makeBook({ id: 3, title: 'Deutsch', status: 'imported', language: 'de' }),
+    ])
+    await screen.findByRole('heading', { name: 'Two Letter' })
+    const select = screen.getByLabelText('Language')
+    expect(within(select).getAllByRole('option').map(o => o.textContent)).toEqual(['All languages', 'English', 'German'])
+    fireEvent.change(select, { target: { value: 'eng' } })
+    expect(screen.getByRole('heading', { name: 'Two Letter' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Three Letter' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Deutsch' })).toBeNull()
   })
 
   it('keeps all four stat cells when a count is zero', async () => {
@@ -1193,6 +1353,29 @@ describe('AuthorDetailPage: manual refresh', () => {
     const calls = vi.mocked(api.getAuthor).mock.calls.length
     await advance(10000)
     expect(vi.mocked(api.getAuthor).mock.calls.length).toBe(calls)
+  })
+
+  it('regroups by series after a refresh moves a book into one (#2554)', async () => {
+    // Grouped by series: before the refresh the book is in none, the refresh
+    // files it under one, and the page must regroup without a reload.
+    localStorage.setItem('bindery.group.author-detail.series', 'true')
+    const book = makeBook({ id: 7, title: 'Fjellvinden', status: 'imported' })
+    renderAuthorDetailPage([book], 'table')
+    await screen.findByRole('heading', { name: /Standalone/ })
+
+    vi.useFakeTimers()
+    const finishAt = Date.now() + 3000
+    const synced = () => Date.now() >= finishAt
+    vi.mocked(api.getAuthor).mockImplementation(async () => (synced() ? author : { ...author, syncInProgress: true }))
+    vi.mocked(api.listAuthorSeries).mockImplementation(async () => (synced()
+      ? [{ id: 3, foreignSeriesId: 's:3', title: 'Fjellserien', description: '', monitored: false, books: [{ seriesId: 3, bookId: 7, positionInSeries: '1' }] }]
+      : []))
+    vi.mocked(api.refreshAuthor).mockResolvedValue(undefined)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    await advance(4000)
+    expect(screen.getByRole('heading', { name: /Fjellserien/ })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: /Standalone/ })).toBeNull()
   })
 
   it('gives up waiting after a minute and shows whatever the server has', async () => {

@@ -379,6 +379,8 @@ Set a download-client path remap in **Settings → Download clients** or set the
 
 The same remaps also run in reverse, with the same precedence, when Bindery tells a client where to save a grab. rTorrent always gets a download directory, and qBittorrent gets a save path when the client has no category set. That directory is Bindery's download folder (`BINDERY_DOWNLOAD_DIR`, or `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` for audiobooks) translated into the client's path: by the client's own remap when it covers that folder, otherwise by `BINDERY_DOWNLOAD_PATH_REMAP`. With `BINDERY_DOWNLOAD_PATH_REMAP=/data:/downloads` and no client remap, rTorrent is told to save into `/data`. Bindery 1.40.0 and earlier applied only the client's own remap here, so with just the global remap set the client was sent Bindery's `/downloads`.
 
+The download client **Test** button and the 15 minute health check look at the folder a grab actually lands in, the same one **Diagnose** reports: for rTorrent, and for a qBittorrent client with no category, the folder it is sent, and for qBittorrent with a category the folder that category saves to. A qBittorrent category with an empty save path saves to the default save path plus the category name, and a relative one under the default save path. qBittorrent creates that folder on its first download, so until then the check is satisfied by its parent. Earlier releases checked rTorrent's own default directory and qBittorrent's default save path instead, so a working setup whose default folder Bindery cannot see was reported as broken ([#2664](https://github.com/vavallee/bindery/issues/2664)). Because Bindery sends rTorrent its own download folder, the check now confirms Bindery can read that folder, not that rTorrent writes to the same storage; if grabs never import, run **Diagnose** on the client.
+
 On the way out the global remap matches every client, because its right side is Bindery's own folder. If the global remap is written for one client (say SABnzbd sees Bindery's `/downloads` as `/data`) and an rTorrent or category-less qBittorrent mounts Bindery's folder at the same path, give that client an identity path remap, `/downloads:/downloads`. A client remap that covers the folder always wins, even when it maps it to itself, so that client keeps being sent `/downloads`. **Diagnose** on the client warns when the global remap produced the folder it sends while the client's own default save folder sits on Bindery's path, which is what that setup looks like. If the client really keeps that storage at the remapped path, ignore the warning.
 
 Per-client remaps are stored on each download client, so separate qBittorrent / SABnzbd / NZBGet instances can map different mount points. Existing download clients keep an empty remap after upgrade, which preserves the previous global-only behavior until you add a client-specific value.
@@ -717,6 +719,32 @@ freshness marker, so they are not used to satisfy these upstream lookups.
 Persistent edition caching would require tracking both completeness and
 provider/account freshness separately from local book refresh timestamps.
 These caches do not implement daily quota accounting or pause/resume.
+
+### Hardcover daily quota pause
+
+When Hardcover reports zero requests remaining in its daily `RateLimit` bucket,
+Bindery persists the reset time in private SQLite settings for that API token.
+Further calls using that token stop until the reset, including after a restart.
+Short per-minute throttling keeps its existing retry behavior; `Retry-After`
+alone is not treated as proof of daily exhaustion. Reset delays must be positive
+and no longer than 24 hours; invalid delays are ignored. The stored token
+fingerprints (HMAC-SHA256 under a random install-local key, also a private
+setting) and reset times are hidden from generic settings endpoints. If either
+stored value is corrupt, Bindery logs a warning and starts fresh instead of
+blocking every request.
+
+Settings → API Keys shows when the configured token can be used again. When
+Hardcover is the primary metadata provider, bulk metadata imports and
+background catalogue work stop on the daily hold rather than repeatedly asking
+an exhausted key; books a catalogue sync already created still finish their
+file matching, searches and summary. When Hardcover is only an enricher, bulk
+work carries on without it: held Hardcover calls fail immediately and ISBN
+lookups fall through to the other providers. A Hardcover list sync stops before
+fetching the list. Retry interrupted imports after the shown time; already
+committed records remain, and ABS keeps its checkpoint on the interrupted item.
+Scheduled jobs can run again on their next scheduled pass. This does not add
+automatic edition-hydration recovery or request accounting.
+Different tokens have separate holds, even if they belong to the same account.
 
 ### Enhanced Hardcover series data deployment note
 

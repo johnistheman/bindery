@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import { Link } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { api, Book, SearchResult } from '../api/client'
+import { useConfirmDialog } from '../components/useConfirmDialog'
+import { grabWithForceConfirm } from '../util/forceGrab'
 import BulkActionBar from '../components/BulkActionBar'
 import ImportHints from '../components/ImportHints'
 import Pagination from '../components/Pagination'
@@ -18,8 +20,8 @@ import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 // Below sm the fixed format and action columns left the title about 13px at
 // 375px, so a phone gets three columns and the format and actions move to a
 // second line under the title (see ROW_CONTROLS). On a touch screen from sm
-// up the format column is wider: form controls render at 16px there (see
-// index.css), and "Audiobook" at 16px does not fit in 6rem.
+// up the format column is wider: selects reserve room for their arrow there
+// (see index.css), and "Audiobook" plus that room does not fit in 6rem.
 const ROW_GRID = 'grid grid-cols-[1.5rem_2rem_minmax(0,1fr)] sm:grid-cols-[1.5rem_2rem_1fr_6rem_8.5rem] sm:pointer-coarse:grid-cols-[1.5rem_2rem_1fr_8.5rem_8.5rem] items-center gap-x-3 gap-y-1.5 sm:gap-3'
 // Holds the format select and the actions. A flex line spanning the cover and
 // title columns on a phone; display: contents from sm, so its two children
@@ -31,6 +33,7 @@ const LIST_DEFAULTS = { q: '', excluded: '' }
 
 export default function WantedPage() {
   const { t } = useTranslation()
+  const { confirm, confirmDialog } = useConfirmDialog()
 
   const [books, setBooks] = useState<Book[]>([])
   const [loading, setLoading] = useState(true)
@@ -151,7 +154,7 @@ export default function WantedPage() {
   const grab = async (result: SearchResult, book: Book) => {
     setGrabbingGuid(result.guid)
     try {
-      await api.grab({
+      const dl = await grabWithForceConfirm({
         guid: result.guid,
         title: result.title,
         nzbUrl: result.nzbUrl,
@@ -161,7 +164,8 @@ export default function WantedPage() {
         protocol: result.protocol,
         // The result's own media type wins over the book's 'both' (#2933).
         mediaType: result.mediaType || book.mediaType,
-      })
+      }, confirm, t)
+      if (!dl) return
       setGrabbedGuid(result.guid)
       setTimeout(() => {
         setShowResults(null)
@@ -236,6 +240,7 @@ export default function WantedPage() {
 
   return (
     <div className={selectedIds.size > 0 ? 'pb-16' : ''}>
+      {confirmDialog}
       {toast && (
         <div className="fixed bottom-safe-6 right-safe-6 z-50 px-4 py-2.5 bg-red-600 text-white rounded-lg shadow-lg text-sm font-medium animate-fade-in">
           {toast}

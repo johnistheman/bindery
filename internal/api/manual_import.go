@@ -31,6 +31,10 @@ type manualImportScanner interface {
 	// PreviewImportDestination reports where importing a path against a book
 	// would place the file, without touching disk (#2055).
 	PreviewImportDestination(ctx context.Context, bookID int64, srcPath, formatHint string) (importer.DestinationPreview, error)
+	// RelinkFile moves a tracked file's book_files row to another book
+	// without touching the file on disk: Fix match's correct-match-only
+	// mode (#2055).
+	RelinkFile(ctx context.Context, bookID int64, paths []string, formatHint string) (importer.RelinkResult, error)
 }
 
 // ManualImportHandler serves the manual-import lookup and trigger endpoints.
@@ -46,6 +50,31 @@ type ManualImportHandler struct {
 	// trackedCache holds Scan's already-tracked index, rebuilt only when
 	// book_files changes (see trackedFileIndex, #2480).
 	trackedCache trackedFileCache
+	// excluded are folders Scan does not enter below the folder being
+	// imported: the download folders, as in the library scan. Cleaned and
+	// symlink-resolved at setup (see WithExcludedDirs).
+	excluded []string
+}
+
+// WithExcludedDirs sets folders folder import leaves out when they sit inside
+// the folder being imported, as the library scan does: the download folders.
+// Each is stored cleaned and, when it resolves, as its real path too, so the
+// walk, which runs on a symlink-resolved folder, compares plain strings. The
+// folder being imported is never left out, so importing a download folder
+// itself still works.
+func (h *ManualImportHandler) WithExcludedDirs(dirs ...string) *ManualImportHandler {
+	h.excluded = nil
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		dir = filepath.Clean(dir)
+		h.excluded = append(h.excluded, dir)
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil && resolved != dir {
+			h.excluded = append(h.excluded, resolved)
+		}
+	}
+	return h
 }
 
 func NewManualImportHandler(scanner manualImportScanner, downloads *db.DownloadRepo, books *db.BookRepo) *ManualImportHandler {
@@ -245,6 +274,24 @@ type reassignRequest struct {
 	TargetBookID int64 `json:"targetBookId"`
 	// Format is optional; auto-detected when empty. "ebook" or "audiobook".
 	Format string `json:"format"`
+	// Relocate chooses what Fix match does on disk (#2055). false corrects
+	// which book the file belongs to and leaves the file exactly where it is.
+	// true runs the full import against the target, which moves the file into
+	// its folder and renames it from the naming template. Absent means true,
+	// the behaviour this endpoint always had, so existing API callers are
+	// unchanged; the web UI always sends it and defaults to false.
+	Relocate *bool `json:"relocate,omitempty"`
+}
+
+// reassignLinkResponse is Reassign's answer in correct-match-only mode. The
+// work is done by the time it is sent, so it is 200 rather than 202.
+type reassignLinkResponse struct {
+	Relocated    bool   `json:"relocated"`
+	TargetBookID int64  `json:"targetBookId"`
+	FromBookID   int64  `json:"fromBookId,omitempty"`
+	Path         string `json:"path"`
+	Format       string `json:"format"`
+	Unchanged    bool   `json:"unchanged,omitempty"`
 }
 
 // Reassign handles POST /api/v1/queue/manual-import/reassign.
@@ -262,6 +309,10 @@ func (h *ManualImportHandler) Reassign(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.Path) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	if req.Relocate != nil && !*req.Relocate {
+		h.relink(w, r, req)
 		return
 	}
 	// Validate path containment, confirm the target book exists, and create the
@@ -308,6 +359,30 @@ func (h *ManualImportHandler) Reassign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, dl)
+}
+
+// relink is Reassign with relocate=false (#2055): the same validation as the
+// import path, then the book_files row moves to the target book and nothing on
+// disk changes. Synchronous, because there is no file operation to wait on.
+func (h *ManualImportHandler) relink(w http.ResponseWriter, r *http.Request, req reassignRequest) {
+	path, book, status, msg := h.validateImport(r.Context(), req.Path, req.TargetBookID, req.Format)
+	if book == nil {
+		writeJSON(w, status, map[string]string{"error": msg})
+		return
+	}
+	res, err := h.scanner.RelinkFile(r.Context(), book.ID, []string{filepath.Clean(req.Path), path}, req.Format)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reassignLinkResponse{
+		Relocated:    false,
+		TargetBookID: book.ID,
+		FromBookID:   res.FromBookID,
+		Path:         res.Path,
+		Format:       res.Format,
+		Unchanged:    res.Unchanged,
+	})
 }
 
 // reassignPreviewResponse is the read-only answer to "where would this file end
@@ -689,7 +764,7 @@ func (h *ManualImportHandler) Scan(w http.ResponseWriter, r *http.Request) {
 			seen++
 			return seen <= skipToOffset
 		}
-		cands, roundTruncated := enumerateImportUnits(path, remaining, roundSkip)
+		cands, roundTruncated := enumerateImportUnits(path, remaining, roundSkip, h.excluded)
 		truncated = roundTruncated
 		alreadyConsumed += len(cands)
 		if len(cands) == 0 {

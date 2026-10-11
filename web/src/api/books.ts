@@ -32,9 +32,11 @@ export interface Book {
   identifiers?: BookIdentifier[]
   authorId: number
   title: string
+  sortTitle?: string
   description: string
   imageUrl: string
   releaseDate?: string
+  createdAt?: string
   genres: string[]
   monitored: boolean
   status: string
@@ -45,6 +47,10 @@ export interface Book {
   audiobookFilePath: string
   // All on-disk files tracked in book_files (populated on single-book GET).
   bookFiles?: BookFile[]
+  // True on a single-book response while a download for the book is still on
+  // its way into the library. The book page refreshes itself while it is set
+  // (#2423).
+  importInFlight?: boolean
   excluded: boolean
   // Fields manually edited by the user and locked against metadata refresh
   // (#1237, #1446): title | description | genres | language | releaseDate.
@@ -135,6 +141,13 @@ export interface SearchDebug {
   filters: FilterDebug[]
   startedAt: string
   durationMs: number
+  // Which search this is (#2154): 'interactive' or an automatic origin such
+  // as 'scheduled' or 'bulk', the book, and for an automatic search what it
+  // did ('grabbed', 'no results', ...).
+  origin?: string
+  bookId?: number
+  userId?: number
+  outcome?: string
 }
 
 export interface SearchBookResponse {
@@ -151,6 +164,15 @@ export interface ReassignPreview {
   format: string
   status: 'move' | 'noop' | 'collision' | 'missing' | 'error'
   message?: string
+}
+
+// A series the user took a book out of (#2554), named as it is now (0 and ''
+// when the series no longer exists), with the position the book had.
+export interface BookSeriesExclusion {
+  seriesForeignId: string
+  seriesId: number
+  seriesTitle: string
+  position: string
 }
 
 export const booksApi = {
@@ -171,8 +193,11 @@ export const booksApi = {
   // This MOVES AND RENAMES the file on disk and returns 202 before the move
   // runs, so there is nothing to undo against. Call reassignFilePreview first
   // and let the user confirm (#2055).
-  reassignFile: (data: { path: string; targetBookId: number; format?: string }) =>
-    request<{ id: number }>('/queue/manual-import/reassign', { method: 'POST', body: JSON.stringify(data) }),
+  // relocate false corrects the match only: the file stays where it is and the
+  // answer is 200 once the link has moved. relocate true (or absent) runs the
+  // full import and answers 202 with the import record (#2055).
+  reassignFile: (data: { path: string; targetBookId: number; format?: string; relocate?: boolean }) =>
+    request<{ id?: number; relocated?: boolean; targetBookId?: number }>('/queue/manual-import/reassign', { method: 'POST', body: JSON.stringify(data) }),
 
   // Read-only: where reassignFile would put this file. Computed server-side by
   // the same renamer the import uses, so the path shown is the path written.
@@ -218,6 +243,7 @@ export const booksApi = {
   },
   getBook: (id: number) => request<Book>(`/book/${id}`),
   updateBook: (id: number, data: Partial<Book>) => request<Book>(`/book/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  getBookSeriesExclusions: (id: number) => request<BookSeriesExclusion[]>(`/book/${id}/series-exclusions`),
   deleteBook: (id: number, deleteFiles = false) =>
     request<void>(`/book/${id}${deleteFiles ? '?deleteFiles=true' : ''}`, { method: 'DELETE' }),
   deleteBookFile: (id: number, queryParams = '') => request<Book>(`/book/${id}/file${queryParams}`, { method: 'DELETE' }),

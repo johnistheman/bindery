@@ -683,7 +683,7 @@ func (h *AuthorHandler) fetchAuthorForCreate(ctx context.Context, foreignID, fal
 			ForeignID:        foreignID,
 			Name:             fallbackName,
 			SortName:         sortName(fallbackName),
-			MetadataProvider: "openlibrary",
+			MetadataProvider: models.AuthorProviderFromForeignID(foreignID),
 		}, nil
 	}
 	author, err := h.meta.GetAuthor(ctx, foreignID)
@@ -693,7 +693,7 @@ func (h *AuthorHandler) fetchAuthorForCreate(ctx context.Context, foreignID, fal
 			ForeignID:        foreignID,
 			Name:             fallbackName,
 			SortName:         sortName(fallbackName),
-			MetadataProvider: "openlibrary",
+			MetadataProvider: models.AuthorProviderFromForeignID(foreignID),
 		}, nil
 	}
 	if author == nil {
@@ -701,7 +701,7 @@ func (h *AuthorHandler) fetchAuthorForCreate(ctx context.Context, foreignID, fal
 			ForeignID:        foreignID,
 			Name:             fallbackName,
 			SortName:         sortName(fallbackName),
-			MetadataProvider: "openlibrary",
+			MetadataProvider: models.AuthorProviderFromForeignID(foreignID),
 		}, nil
 	}
 	if strings.TrimSpace(author.Name) == "" {
@@ -805,7 +805,7 @@ func (h *AuthorHandler) relinkExistingAuthorToUpstream(ctx context.Context, auth
 	if provider := strings.TrimSpace(upstream.MetadataProvider); provider != "" {
 		author.MetadataProvider = provider
 	} else {
-		author.MetadataProvider = "openlibrary"
+		author.MetadataProvider = models.AuthorProviderFromForeignID(author.ForeignID)
 	}
 	applyAuthorCreateOptions(author, monitored, monitorMode, monitorLatestCount, qualityProfileID, metadataProfileID, rootFolderID, audiobookRootFolderID)
 	author.MonitorNewItems = monitorNewItems
@@ -1760,7 +1760,9 @@ func (h *AuthorHandler) authorAwaitsFirstCatalogue(ctx context.Context, author *
 // The outcome is logged by runCatalogueSync; callers that need it (scheduled
 // discovery, #2236) call runCatalogueSync directly.
 func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Author, opts catalogueSyncOptions) {
-	_, _ = h.runCatalogueSync(ctx, author, opts)
+	if _, err := h.runCatalogueSync(ctx, author, opts); err != nil {
+		slog.Warn("author catalogue sync stopped", "author", author.Name, "error", err)
+	}
 }
 
 // refreshTitleMatch re-reads a row the catalogue sync matched by title. The
@@ -1815,6 +1817,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			h.runningSyncs.start(syncID)
 		}
 		defer h.runningSyncs.done(syncID)
+	}
+	if err := h.meta.CheckQuota(ctx); err != nil {
+		return 0, err
 	}
 	// A manual Refresh Metadata reads the author's profile, catalogue and
 	// Audible catalogue past the metadata cache (#2601). Only those lookups
@@ -1977,7 +1982,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// OpenLibrary metadata gap it has no way to tell apart from an actual
 	// foreign-language book.
 	if len(allowedLangs) > 0 {
-		applyAuthorMajorityLanguageFallback(books)
+		applyAuthorMajorityLanguageFallback(books, languageEvidence)
 	}
 
 	// Everything above can take minutes for a prolific author (works fetch,
@@ -2345,7 +2350,14 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		})
 	}
 
+	// A daily hold stops creating books, but the books this run already created
+	// still get hydration, file matching, search and the summary below: the
+	// next sync treats them as existing, so skipping that work would strand them.
+	var quotaErr error
 	for _, b := range candidates {
+		if quotaErr = h.meta.CheckQuota(ctx); quotaErr != nil {
+			break
+		}
 		// A cancelled or timed out run stops creating books rather than
 		// logging one failed insert per remaining work.
 		if ctx.Err() != nil {
@@ -2782,6 +2794,10 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		seededEditions[editionTarget{ForeignID: foreignID}.cacheKey()] = editions
 	}
 	editionCache := h.prefetchHardcoverEditions(ctx, createdTargets, seededEditions)
+	if quotaErr == nil {
+		// Held calls below fail fast, so record the hold and finish local work.
+		quotaErr = h.meta.CheckQuota(ctx)
+	}
 
 	// The author's catalogue as this sync leaves it, for the rival title
 	// check (#2941): read once here instead of once per bound book.
@@ -2827,7 +2843,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	if singleWork {
 		slog.Info("single-work catalogue fallback complete",
 			"author", author.Name, "foreignId", opts.onlyForeignID, "added", added)
-		return added, nil
+		return added, quotaErr
 	}
 
 	h.announceDiscoveredBooks(context.WithoutCancel(ctx), author, opts, populatedBefore, createdBooks)
@@ -2888,10 +2904,10 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	if failed+skippedLang+skippedJunk+skippedMediaType+skippedPartBooks+skippedMissingDate+
 		skippedMinPages+skippedMissingISBN+skippedThinCluster > 0 {
 		slog.Warn("author books synced", logArgs...)
-		return added, nil
+		return added, quotaErr
 	}
 	slog.Info("author books synced", logArgs...)
-	return added, nil
+	return added, quotaErr
 }
 
 // keepWorkWithForeignID narrows a provider works list to the single work the
@@ -3698,7 +3714,17 @@ const authorMajorityLanguageThreshold = 0.9
 // least authorMajorityLanguageMinSample resolved works. Mutates books in
 // place. A no-op when too few works have a resolved language yet, or when
 // no single language dominates strongly enough to trust.
-func applyAuthorMajorityLanguageFallback(books []models.Book) {
+//
+// A blank work whose title is written in a different script from the
+// majority's titles is left blank (#3091): "Рожби на съзнанието" in an English
+// author's catalogue is a translation, and stamping "eng" on it let it past
+// even unknown_language_behavior = fail. It keeps an unknown language, so the
+// profile's unknown-language rule decides it. So is a work its provider has
+// already proved is in a language the profile does not allow: the filter
+// rejects it on that evidence anyway, and the skipped sample should not show
+// it as English. Indeterminate evidence still gets the fallback, as it did
+// before: it means the provider found no edition in any language (#2754).
+func applyAuthorMajorityLanguageFallback(books []models.Book, evidence map[string]metadata.AuthorWorkLanguageEvidence) {
 	counts := make(map[string]int, 4)
 	resolved := 0
 	for _, b := range books {
@@ -3721,10 +3747,18 @@ func applyAuthorMajorityLanguageFallback(books []models.Book) {
 	if float64(majorityCount)/float64(resolved) < authorMajorityLanguageThreshold {
 		return
 	}
+	majorityScript := majorityTitleScript(books, majorityLang)
 	for i := range books {
-		if books[i].Language == "" {
-			books[i].Language = majorityLang
+		if books[i].Language != "" {
+			continue
 		}
+		if found, ok := evidence[strings.TrimSpace(books[i].ForeignID)]; ok && found.State == metadata.AuthorWorkLanguageNotAllowed {
+			continue
+		}
+		if script := titleScript(books[i].Title); script != "" && majorityScript != "" && script != majorityScript {
+			continue
+		}
+		books[i].Language = majorityLang
 	}
 }
 
