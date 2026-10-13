@@ -194,11 +194,12 @@ func TestTryImportInternal_CorrectsLanguageWhenEpubDisagrees(t *testing.T) {
 }
 
 // TestTryImportInternal_NoCorrectionWhenLanguagesAgree guards against a write
-// and a history row on every single import. The stored value is deliberately
-// the two-letter "en" a provider supplies rather than the canonical "eng":
-// the catalogue is NOT normalised on write, so comparing raw strings would see
-// "en" against the EPUB's normalised "eng", call it a disagreement, and
-// "correct" every English book to English on every import (#1729).
+// and a history row on every single import. The book is created with the
+// two-letter "en" a provider supplies rather than the canonical "eng"; the
+// repository now canonicalises that on write (#3086), so the stored value is
+// "eng", but the importer still has to compare normalised, or a row written
+// before that would read as a disagreement and be "corrected" to English on
+// every import (#1729).
 func TestTryImportInternal_NoCorrectionWhenLanguagesAgree(t *testing.T) {
 	t.Parallel()
 
@@ -223,7 +224,7 @@ func TestTryImportInternal_NoCorrectionWhenLanguagesAgree(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Language != stored {
+			if want := models.NormalizeLanguageCode(stored); got.Language != want {
 				t.Errorf("book language = %q, want %q unchanged — the EPUB agrees, so nothing should be written", got.Language, stored)
 			}
 			if events := correctionEvents(t, ctx, hist); len(events) != 0 {
