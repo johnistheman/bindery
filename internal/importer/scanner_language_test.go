@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -37,6 +38,14 @@ func writeEpubWithLanguage(t *testing.T, dst, language string) {
 // at it, and returns the scanner, download, book repo, history repo and ctx.
 func languageFixture(t *testing.T, libraryDir string, book *models.Book) (*Scanner, *models.Download, *db.BookRepo, *db.HistoryRepo, context.Context) {
 	t.Helper()
+	s, dl, bookRepo, hist, ctx, _ := languageFixtureDB(t, libraryDir, book)
+	return s, dl, bookRepo, hist, ctx
+}
+
+// languageFixtureDB is languageFixture that also hands back the database, for
+// a test that has to plant a row the repository would not write.
+func languageFixtureDB(t *testing.T, libraryDir string, book *models.Book) (*Scanner, *models.Download, *db.BookRepo, *db.HistoryRepo, context.Context, *sql.DB) {
+	t.Helper()
 	database, err := db.OpenMemory()
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +79,7 @@ func languageFixture(t *testing.T, libraryDir string, book *models.Book) (*Scann
 	if err := dlRepo.Create(ctx, dl); err != nil {
 		t.Fatal(err)
 	}
-	return s, dl, bookRepo, histRepo, ctx
+	return s, dl, bookRepo, histRepo, ctx, database
 }
 
 // TestTryImportInternal_FillsLanguageFromEpub verifies the #1160 import-time
@@ -216,7 +225,14 @@ func TestTryImportInternal_NoCorrectionWhenLanguagesAgree(t *testing.T) {
 				Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook,
 				Language: stored,
 			}
-			s, dl, bookRepo, hist, ctx := languageFixture(t, libraryDir, book)
+			s, dl, bookRepo, hist, ctx, database := languageFixtureDB(t, libraryDir, book)
+			// The repository canonicalises on write, so a row that still
+			// carries the raw spelling (one written before #3086) has to be
+			// planted with SQL. Without it this test never reaches the
+			// normalise-before-compare in applyEmbeddedLanguage.
+			if _, err := database.ExecContext(ctx, "UPDATE books SET language = ? WHERE id = ?", stored, book.ID); err != nil {
+				t.Fatal(err)
+			}
 
 			s.tryImportInternal(ctx, dl, downloadPath, "qbittorrent", "abc123", "", nil, nil)
 
@@ -224,7 +240,7 @@ func TestTryImportInternal_NoCorrectionWhenLanguagesAgree(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if want := models.NormalizeLanguageCode(stored); got.Language != want {
+			if got.Language != stored {
 				t.Errorf("book language = %q, want %q unchanged — the EPUB agrees, so nothing should be written", got.Language, stored)
 			}
 			if events := correctionEvents(t, ctx, hist); len(events) != 0 {

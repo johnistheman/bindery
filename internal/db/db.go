@@ -540,6 +540,7 @@ func BackfillRevisionKeys() []string {
 		backfillRevKeyBookSortKeys,
 		backfillRevKeySearchKeys,
 		backfillRevKeyASINCase,
+		backfillRevKeyLanguageCode,
 	}
 }
 
